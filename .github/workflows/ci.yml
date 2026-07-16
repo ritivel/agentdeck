@@ -49,6 +49,9 @@ jobs:
           cache-dependency-path: bridge/package-lock.json
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Install bridge dependencies
+        run: npm ci
+        working-directory: bridge
       - name: Generate project
         run: xcodegen generate
         working-directory: ios

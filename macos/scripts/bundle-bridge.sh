@@ -36,6 +36,10 @@ if [ ! -d "$STAGING" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$FINGERPRINT" ]; t
   rm -rf "$STAGING"
   mkdir -p "$STAGING"
 
+  # Fresh clone / CI: install dev deps (tsc) before building.
+  if [ ! -x "$BRIDGE_DIR/node_modules/.bin/tsc" ]; then
+    (cd "$BRIDGE_DIR" && npm ci >/dev/null 2>&1)
+  fi
   (cd "$BRIDGE_DIR" && npm run build >/dev/null)
   cp -R "$BRIDGE_DIR/dist" "$STAGING/dist"
   cp "$BRIDGE_DIR/package.json" "$BRIDGE_DIR/package-lock.json" "$STAGING/"
