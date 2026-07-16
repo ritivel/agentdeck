@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <meta name="theme-color" content="#0d0d0f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>AgentDeck</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🃏</text></svg>">
+</head>
+<body>
+  <div id="app">
+    <!-- Pair screen -->
+    <section id="pair-screen" class="screen" hidden>
+      <div class="pair-box">
+        <h1>🃏 AgentDeck</h1>
+        <p class="muted">Connect to the bridge running on your Mac.</p>
+        <label>Bridge address
+          <input id="pair-host" placeholder="mac.local:8787" autocapitalize="none" autocorrect="off">
+        </label>
+        <label>Token
+          <input id="pair-token" placeholder="paste the pairing token" autocapitalize="none" autocorrect="off">
+        </label>
+        <button id="pair-connect" class="primary">Connect</button>
+        <p id="pair-error" class="error" hidden></p>
+        <p class="muted small">Tip: on the Mac, <code>agentdeck pair</code> prints a link that fills this in automatically.</p>
+      </div>
+    </section>
+
+    <!-- Deck screen -->
+    <section id="deck-screen" class="screen" hidden>
+      <header class="bar">
+        <span id="conn-dot" class="dot"></span>
+        <h2 id="server-name">AgentDeck</h2>
+        <button id="new-session-btn" title="New session">＋</button>
+      </header>
+      <main id="deck-list"></main>
+    </section>
+
+    <!-- Chat screen -->
+    <section id="chat-screen" class="screen" hidden>
+      <header class="bar">
+        <button id="chat-back" title="Back">‹</button>
+        <div class="chat-title">
+          <h2 id="chat-name">Session</h2>
+          <span id="chat-cwd" class="muted small"></span>
+        </div>
+        <span id="chat-live" class="live-badge" hidden>LIVE</span>
+        <span id="chat-state" class="state-pill"></span>
+      </header>
+      <main id="chat-transcript"></main>
+      <div id="takeover-hint" class="hint" hidden>
+        Terminal session — sending a message takes it over
+      </div>
+      <footer class="input-bar">
+        <textarea id="chat-input" rows="1" placeholder="Message…"></textarea>
+        <button id="chat-send" class="round primary">↑</button>
+        <button id="chat-stop" class="round stop" hidden>■</button>
+      </footer>
+    </section>
+
+    <!-- New session sheet -->
+    <div id="sheet-backdrop" hidden>
+      <div id="new-session-sheet">
+        <h3>New Session</h3>
+        <div id="platform-picker" class="segmented"></div>
+        <label>Working directory
+          <input id="ns-cwd" list="dir-suggestions" placeholder="/Users/me/project"
+                 autocapitalize="none" autocorrect="off">
+          <datalist id="dir-suggestions"></datalist>
+        </label>
+        <label>Permission mode
+          <select id="ns-mode">
+            <option value="acceptEdits">Accept Edits</option>
+            <option value="plan">Plan</option>
+            <option value="bypassPermissions">Bypass Permissions</option>
+            <option value="manual">Manual</option>
+          </select>
+        </label>
+        <label>First prompt (optional)
+          <textarea id="ns-prompt" rows="2" placeholder="What should the agent do?"></textarea>
+        </label>
+        <div class="sheet-actions">
+          <button id="ns-cancel">Cancel</button>
+          <button id="ns-create" class="primary">Create Session</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" hidden></div>
+  </div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

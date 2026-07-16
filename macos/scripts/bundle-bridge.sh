@@ -28,7 +28,7 @@ NODE_BIN="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$N
 export PATH="$(dirname "$NODE_BIN"):$PATH"
 
 # Rebuild the staging area only when bridge sources change.
-FINGERPRINT="$( (cd "$BRIDGE_DIR" && cat package-lock.json; find src -type f -name '*.ts' -exec shasum {} \;) | shasum | cut -d' ' -f1 )"
+FINGERPRINT="$( (cd "$BRIDGE_DIR" && cat package-lock.json; find src ../web -type f \( -name '*.ts' -o -name '*.js' -o -name '*.html' -o -name '*.css' \) -exec shasum {} \;) | shasum | cut -d' ' -f1 )"
 STAMP="$STAGING/.fingerprint"
 
 if [ ! -d "$STAGING" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$FINGERPRINT" ]; then

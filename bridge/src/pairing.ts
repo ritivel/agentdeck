@@ -38,5 +38,8 @@ export function printPairingInfo(port: number, token: string) {
   console.log(`  Health:    http://${host}:${port}/health`);
   console.log('\nScan from the AgentDeck iOS app to pair:\n');
   qrcode.generate(payload, { small: true });
-  console.log(`Or pair manually — host: ${host}  port: ${port}  token: ${token}\n`);
+  console.log(`Or pair manually — host: ${host}  port: ${port}  token: ${token}`);
+  console.log(`\nMobile web (any phone on this network — open in the browser):`);
+  console.log(`  http://${host}:${port}/?token=${encodeURIComponent(token)}`);
+  console.log(`For access from anywhere: agentdeck share\n`);
 }

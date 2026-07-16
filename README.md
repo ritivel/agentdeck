@@ -33,6 +33,23 @@ This installs the `agentdeck` command (needs Node 22.5+), registers a login serv
 (`agentdeck service install`), and prints the pairing QR (`agentdeck pair`). One of the
 agent CLIs (`claude`, `cursor-agent`, `codex`) should be installed and logged in.
 
+### Any phone, any distance — the mobile web app
+
+No install at all: the bridge serves a mobile web app. On the same Wi-Fi, `agentdeck pair`
+prints an `http://<mac>:8787/?token=…` link any phone can open. For **anywhere in the
+world** (internet on both sides is enough):
+
+```bash
+brew install cloudflared   # once
+agentdeck share            # prints a public https URL + QR
+```
+
+`share` opens a Cloudflare quick tunnel to your bridge and prints a link like
+`https://<random>.trycloudflare.com/?token=…` — scan the QR with any phone camera
+(iPhone *or* Android) and you get the full deck: live sessions, chat, new sessions,
+interrupts, notifications. Treat the link like a password (it contains your token); the
+URL rotates every run. Ctrl-C closes the tunnel.
+
 ### The iPhone app
 
 Until it's on TestFlight, build it on-device with a free Apple ID:
@@ -134,6 +151,7 @@ bridge/            Node/TS daemon
   test/            fixture tests + e2e smoke tests
 ios/               SwiftUI iPhone app + the shared models/client (XcodeGen project)
 macos/             SwiftUI menu bar app (embeds the bridge)
+web/               mobile web app (no build step; served by the bridge, tunneled by `share`)
 PROTOCOL.md        the WebSocket protocol all clients implement
 install.sh         CLI installer (npm global + launchd service)
 ```
@@ -142,6 +160,8 @@ install.sh         CLI installer (npm global + launchd service)
 
 - [x] Live discovery + mirroring for all three platforms
 - [x] Mac menu bar app with embedded bridge and pairing QR
+- [x] Mobile web app + `agentdeck share` (Cloudflare tunnel — any device, any distance)
+- [ ] Stable share URL via a named Cloudflare tunnel on your own domain
 - [ ] TestFlight distribution for the iOS app
 - [ ] Notarized + Homebrew-cask Mac app distribution
 - [ ] Approve/deny tool permissions from the phone

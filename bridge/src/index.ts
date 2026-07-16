@@ -5,6 +5,7 @@ import { advertise } from './discovery.js';
 import { runResume } from './cli.js';
 import { runWrappedClaude } from './wrapper.js';
 import { runService } from './service.js';
+import { runShare } from './share.js';
 
 const args = process.argv.slice(2);
 const portIdx = args.indexOf('--port');
@@ -54,8 +55,13 @@ if (command === 'claude') {
   }
 } else if (command === 'pair') {
   printPairingInfo(port, process.env.AGENTDECK_TOKEN ?? loadOrCreateToken());
+} else if (command === 'share') {
+  runShare(port).catch((err) => {
+    console.error(err.message);
+    process.exit(1);
+  });
 } else if (command) {
-  console.error(`unknown command: ${command} (try: agentdeck | agentdeck claude | agentdeck resume | agentdeck sessions | agentdeck service install | agentdeck pair)`);
+  console.error(`unknown command: ${command} (try: agentdeck | agentdeck claude | agentdeck resume | agentdeck sessions | agentdeck service install | agentdeck pair | agentdeck share)`);
   process.exit(1);
 }
 

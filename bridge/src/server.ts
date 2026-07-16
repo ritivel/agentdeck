@@ -1,7 +1,8 @@
-import { createServer, type IncomingMessage } from 'node:http';
-import { readdirSync, existsSync } from 'node:fs';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { readdirSync, existsSync, readFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname, normalize } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { SessionManager, adapters } from './sessions.js';
 import { DismissedSessions } from './dismissed.js';
@@ -45,6 +46,41 @@ function suggestDirs(): string[] {
 export interface BridgeServer {
   port: number;
   close(): void;
+}
+
+/** The bundled mobile web app: dist/web when built/packaged, ../web in dev. */
+function webRoot(): string | null {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const dir of [join(here, 'web'), join(here, '..', '..', 'web')]) {
+    if (existsSync(join(dir, 'index.html'))) return dir;
+  }
+  return null;
+}
+
+const MIME: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.json': 'application/json',
+};
+
+function serveStatic(root: string, urlPath: string, res: ServerResponse): boolean {
+  const rel = urlPath === '/' ? 'index.html' : urlPath.slice(1);
+  // No traversal, no hidden files.
+  if (rel.includes('..') || rel.startsWith('.')) return false;
+  const file = normalize(join(root, rel));
+  if (!file.startsWith(root) || !existsSync(file)) return false;
+  const ext = file.slice(file.lastIndexOf('.'));
+  try {
+    const body = readFileSync(file);
+    res.writeHead(200, { 'content-type': MIME[ext] ?? 'application/octet-stream' });
+    res.end(body);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function startServer(port: number, token: string, opts: { watchLive?: boolean } = {}): Promise<BridgeServer> {
@@ -127,12 +163,17 @@ export async function startServer(port: number, token: string, opts: { watchLive
     platformAvailability[name] = { available: await adapter.available() };
   }
 
+  const web = webRoot();
+
   const httpServer = createServer((req, res) => {
     if (req.url === '/health') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true, name: hostname(), version: VERSION }));
       return;
     }
+    // The mobile web app (token still required to open the WebSocket).
+    const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+    if (web && req.method === 'GET' && serveStatic(web, path, res)) return;
     res.writeHead(404);
     res.end();
   });
