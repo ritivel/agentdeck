@@ -1,0 +1,9 @@
+# Xcode / build artifacts — project.yml is the source of truth
+*.xcodeproj
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+.DS_Store
+
+# Generated Info.plist is produced by XcodeGen from project.yml
