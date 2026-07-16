@@ -91,6 +91,13 @@ struct SessionInfo: Codable, Identifiable, Equatable {
     var createdAt: Double
     var updatedAt: Double
     var lastText: String?
+    /// True for sessions discovered on disk (started in a terminal), not spawned by the bridge.
+    var attached: Bool?
+    /// True when the bridge only mirrors the session and cannot send prompts to it.
+    var readOnly: Bool?
+
+    var isAttached: Bool { attached == true }
+    var isReadOnly: Bool { readOnly == true }
 
     static func == (lhs: SessionInfo, rhs: SessionInfo) -> Bool {
         lhs.id == rhs.id
@@ -98,6 +105,7 @@ struct SessionInfo: Codable, Identifiable, Equatable {
             && lhs.state == rhs.state
             && lhs.updatedAt == rhs.updatedAt
             && lhs.lastText == rhs.lastText
+            && lhs.attached == rhs.attached
     }
 }
 

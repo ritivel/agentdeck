@@ -26,9 +26,21 @@ clients connect to. All messages are JSON, one object per WebSocket text frame.
   "nativeSessionId": "504adf8d-...",  // platform's own session/chat/thread id
   "createdAt": 1760000000000,
   "updatedAt": 1760000012345,
-  "lastText": "Done — tests pass."   // last assistant text, for list previews
+  "lastText": "Done — tests pass.",  // last assistant text, for list previews
+  "attached": false,                 // true = discovered on disk (started in a terminal), not spawned by the bridge
+  "readOnly": false                  // true = bridge mirrors only; prompt/interrupt/archive are rejected
 }
 ```
+
+### Live (attached) sessions
+
+The bridge also discovers Claude Code sessions started **outside** the bridge — i.e. in a
+terminal or IDE — by watching the transcript JSONL files Claude Code writes under
+`~/.claude/projects/<slug>/<id>.jsonl`. These appear in `session.list`/`welcome` with
+`attached: true` and `readOnly: true`, `id` prefixed `live_`, and `permissionMode: "attached"`.
+Their transcript is parsed on discovery and tailed in real time, emitting the same `event`
+envelopes as spawned sessions. `prompt`, `interrupt`, and `session.archive` return an `error`
+for these (take-over from the phone is a roadmap item). Disable discovery with `--no-watch`.
 
 ```jsonc
 // AgentEvent — normalized across platforms; sent in "event" envelopes

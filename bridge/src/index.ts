@@ -8,10 +8,11 @@ const portIdx = args.indexOf('--port');
 const port = portIdx >= 0 ? Number(args[portIdx + 1]) : 8787;
 const noQr = args.includes('--no-qr');
 const noBonjour = args.includes('--no-bonjour');
+const noWatch = args.includes('--no-watch');
 
 async function main() {
   const token = process.env.AGENTDECK_TOKEN ?? loadOrCreateToken();
-  const server = await startServer(port, token);
+  const server = await startServer(port, token, { watchLive: !noWatch });
 
   let stopAdvertising = () => {};
   if (!noBonjour) {

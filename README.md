@@ -81,10 +81,22 @@ ios/               SwiftUI app (XcodeGen project)
 PROTOCOL.md        the WebSocket protocol both sides implement
 ```
 
+## Live sessions (mirror what's already running)
+
+AgentDeck doesn't only start *new* agents — it also mirrors Claude Code sessions you
+started in your **terminal or IDE**. The bridge watches the transcript files Claude Code
+writes (`~/.claude/projects/<slug>/<id>.jsonl`), lists every recent session, and tails it
+in real time to your phone — marked with a **LIVE** badge and shown read-only. Zero setup;
+nothing to enable in your terminal. (Disable with `agentdeck --no-watch`.)
+
+Taking over a live session from the phone (via `claude --resume`) and Codex live sessions
+(`~/.codex/sessions/`) are the next steps here.
+
 ## Roadmap
 
+- [ ] Take over a live terminal session from the phone (`claude --resume`)
+- [ ] Live discovery for Codex (`~/.codex/sessions/`) and Cursor
 - [ ] Approve/deny tool permissions from the phone
 - [ ] APNs push (works when the app is backgrounded/closed)
-- [ ] Attach to *existing* terminal sessions (Claude Code session files / `codex app-server`)
 - [ ] E2E-encrypted relay for remote access without Tailscale
 - [ ] Android client

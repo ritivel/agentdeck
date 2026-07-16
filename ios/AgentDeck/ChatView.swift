@@ -15,14 +15,23 @@ struct ChatView: View {
         VStack(spacing: 0) {
             transcript
             Divider()
-            inputBar
+            if session?.isReadOnly == true {
+                readOnlyBar
+            } else {
+                inputBar
+            }
         }
         .navigationTitle(session?.title ?? "Session")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                if let state = session?.state {
-                    StatePill(state: state)
+                HStack(spacing: 6) {
+                    if session?.isAttached == true {
+                        LiveBadge()
+                    }
+                    if let state = session?.state {
+                        StatePill(state: state)
+                    }
                 }
             }
         }
@@ -68,6 +77,20 @@ struct ChatView: View {
         }
     }
 
+    private var readOnlyBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "eye.fill").font(.caption)
+            Text("Live view — this session is running in a terminal")
+                .font(.caption)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .background(Color(.secondarySystemBackground))
+    }
+
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField("Message…", text: $draft, axis: .vertical)
@@ -108,6 +131,22 @@ struct ChatView: View {
         client.sendPrompt(sessionId: sessionId, text: text)
         draft = ""
         inputFocused = false
+    }
+}
+
+// MARK: - Live badge
+
+struct LiveBadge: View {
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "dot.radiowaves.left.and.right").font(.system(size: 9, weight: .bold))
+            Text("LIVE").font(.system(size: 10, weight: .heavy))
+        }
+        .foregroundStyle(.purple)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(Color.purple.opacity(0.18))
+        .clipShape(Capsule())
     }
 }
 

@@ -4,6 +4,7 @@ import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { SessionManager, adapters } from './sessions.js';
+import { LiveWatcher } from './live/watcher.js';
 import type { Platform } from './events.js';
 
 const VERSION = '0.1.0';
@@ -42,7 +43,7 @@ export interface BridgeServer {
   close(): void;
 }
 
-export async function startServer(port: number, token: string): Promise<BridgeServer> {
+export async function startServer(port: number, token: string, opts: { watchLive?: boolean } = {}): Promise<BridgeServer> {
   const clients = new Set<WebSocket>();
 
   const broadcast = (msg: object) => {
@@ -55,6 +56,15 @@ export async function startServer(port: number, token: string): Promise<BridgeSe
     onSessionRemoved: (sessionId) => broadcast({ type: 'session.removed', sessionId }),
     onEvent: (sessionId, stored) => broadcast({ type: 'event', sessionId, ...stored }),
   });
+
+  const liveWatcher = new LiveWatcher({
+    onSessionDiscovered: (session) => broadcast({ type: 'session.created', session }),
+    onSessionUpdated: (session) => broadcast({ type: 'session.updated', session }),
+    onEvent: (sessionId, stored) => broadcast({ type: 'event', sessionId, ...stored }),
+  });
+
+  /** Combined view: bridge-spawned sessions plus discovered live terminal sessions. */
+  const allSessions = () => [...manager.list(), ...liveWatcher.list()].sort((a, b) => b.updatedAt - a.updatedAt);
 
   const platformAvailability: Record<string, { available: boolean }> = {};
   for (const [name, adapter] of Object.entries(adapters)) {
@@ -111,7 +121,7 @@ export async function startServer(port: number, token: string): Promise<BridgeSe
             serverName: hostname(),
             version: VERSION,
             platforms: platformAvailability,
-            sessions: manager.list(),
+            sessions: allSessions(),
           });
           break;
         case 'session.create': {
@@ -133,18 +143,31 @@ export async function startServer(port: number, token: string): Promise<BridgeSe
           break;
         }
         case 'session.list':
-          reply({ type: 'sessions', sessions: manager.list() });
+          reply({ type: 'sessions', sessions: allSessions() });
           break;
-        case 'session.history':
-          reply({ type: 'history', sessionId: msg.sessionId, events: manager.history(msg.sessionId, msg.sinceSeq ?? 0) });
+        case 'session.history': {
+          const sinceSeq = msg.sinceSeq ?? 0;
+          const liveHistory = liveWatcher.history(msg.sessionId, sinceSeq);
+          const events = liveHistory ?? manager.history(msg.sessionId, sinceSeq);
+          reply({ type: 'history', sessionId: msg.sessionId, events });
           break;
+        }
         case 'prompt':
+          if (liveWatcher.get(msg.sessionId)) {
+            throw new Error('This session is running in a terminal and is view-only. Take-over from the phone is not supported yet.');
+          }
           manager.prompt(msg.sessionId, String(msg.text ?? ''));
           break;
         case 'interrupt':
+          if (liveWatcher.get(msg.sessionId)) {
+            throw new Error('Cannot interrupt a view-only terminal session.');
+          }
           manager.interrupt(msg.sessionId);
           break;
         case 'session.archive':
+          if (liveWatcher.get(msg.sessionId)) {
+            throw new Error('Cannot archive a view-only terminal session.');
+          }
           manager.archive(msg.sessionId);
           break;
         case 'dirs.suggest':
@@ -164,10 +187,15 @@ export async function startServer(port: number, token: string): Promise<BridgeSe
     httpServer.listen(port, '0.0.0.0', resolve);
   });
 
+  if (opts.watchLive !== false) {
+    liveWatcher.start().catch((err) => console.error(`live watcher failed to start: ${err.message}`));
+  }
+
   return {
     port,
     close() {
       manager.disposeAll();
+      liveWatcher.stop();
       wss.close();
       httpServer.close();
     },

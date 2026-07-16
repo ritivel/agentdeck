@@ -175,6 +175,9 @@ struct SessionCard: View {
                             .lineLimit(1)
                     }
                     Spacer()
+                    if session.isAttached {
+                        LiveBadge()
+                    }
                     StatePill(state: session.state)
                 }
 

@@ -13,6 +13,10 @@ export interface SessionInfo {
   createdAt: number;
   updatedAt: number;
   lastText?: string;
+  /** True for sessions discovered on disk (started in a terminal), not spawned by the bridge. */
+  attached?: boolean;
+  /** True when the bridge only mirrors the session and cannot send prompts to it. */
+  readOnly?: boolean;
 }
 
 export type AgentEvent =
