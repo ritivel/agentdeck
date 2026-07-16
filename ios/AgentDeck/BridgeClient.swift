@@ -33,6 +33,8 @@ final class BridgeClient: NSObject, ObservableObject {
     @Published private(set) var transcripts: [String: [StoredEvent]] = [:]
     @Published private(set) var suggestedDirs: [String] = []
     @Published private(set) var lastError: String?
+    /// Old session id → successor id, set when a live terminal session is taken over.
+    @Published private(set) var redirects: [String: String] = [:]
     @Published var target: ConnectionTarget?
 
     /// Notified for every incoming stored event so higher layers (notifications) can react.
@@ -196,7 +198,14 @@ final class BridgeClient: NSObject, ObservableObject {
             upsert(s)
         case .sessionRemoved(let id):
             sessions.removeAll { $0.id == id }
-            transcripts[id] = nil
+            // Keep the transcript when this removal is part of a takeover — the
+            // successor session's view reads it until fresh history arrives.
+            if redirects[id] == nil { transcripts[id] = nil }
+        case .sessionTakeover(let from, let s):
+            redirects[from] = s.id
+            upsert(s)
+            if transcripts[s.id] == nil { transcripts[s.id] = transcripts[from] }
+            requestHistory(s.id)
         case .event(let sid, let stored):
             appendEvent(sid, stored)
             onIncomingEvent?(sid, stored)
@@ -257,10 +266,23 @@ final class BridgeClient: NSObject, ObservableObject {
         send(clientMessage: ["type": "dirs.suggest"])
     }
 
+    /// Follow takeover redirects: the id a view was opened with may have been
+    /// superseded by a bridge-owned session continuing the same conversation.
+    func resolve(_ sessionId: String) -> String {
+        var id = sessionId
+        var hops = 0
+        while let next = redirects[id], hops < 10 {
+            id = next
+            hops += 1
+        }
+        return id
+    }
+
     func requestHistoryIfNeeded(_ sessionId: String) {
-        if transcripts[sessionId] == nil, !requestedHistory.contains(sessionId) {
-            requestedHistory.insert(sessionId)
-            send(clientMessage: ["type": "session.history", "sessionId": sessionId])
+        let id = resolve(sessionId)
+        if transcripts[id] == nil, !requestedHistory.contains(id) {
+            requestedHistory.insert(id)
+            send(clientMessage: ["type": "session.history", "sessionId": id])
         }
     }
 
@@ -280,15 +302,15 @@ final class BridgeClient: NSObject, ObservableObject {
     }
 
     func sendPrompt(sessionId: String, text: String) {
-        send(clientMessage: ["type": "prompt", "sessionId": sessionId, "text": text])
+        send(clientMessage: ["type": "prompt", "sessionId": resolve(sessionId), "text": text])
     }
 
     func interrupt(sessionId: String) {
-        send(clientMessage: ["type": "interrupt", "sessionId": sessionId])
+        send(clientMessage: ["type": "interrupt", "sessionId": resolve(sessionId)])
     }
 
     func archive(sessionId: String) {
-        send(clientMessage: ["type": "session.archive", "sessionId": sessionId])
+        send(clientMessage: ["type": "session.archive", "sessionId": resolve(sessionId)])
     }
 
     // MARK: - Ping
@@ -305,7 +327,8 @@ final class BridgeClient: NSObject, ObservableObject {
     // MARK: - Helpers
 
     func session(id: String) -> SessionInfo? {
-        sessions.first { $0.id == id }
+        let resolved = resolve(id)
+        return sessions.first { $0.id == resolved }
     }
 
     func persistTarget() {

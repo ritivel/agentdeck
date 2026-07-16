@@ -33,6 +33,17 @@ export const claudeAdapter: PlatformAdapter = {
     let controlSeq = 0;
     let stderrTail = '';
 
+    // Without a listener, a write racing process death (EPIPE / write-after-end)
+    // becomes an uncaught exception that takes down the whole bridge.
+    child.stdin.on('error', () => {});
+    const writeLine = (obj: unknown) => {
+      if (!child.stdin.writable) {
+        opts.onEvent({ kind: 'error', message: 'claude process is no longer accepting input' });
+        return;
+      }
+      child.stdin.write(JSON.stringify(obj) + '\n');
+    };
+
     child.stdout.on('data', jsonLines((msg) => {
       switch (msg.type) {
         case 'system':
@@ -90,12 +101,10 @@ export const claudeAdapter: PlatformAdapter = {
 
     return {
       send(text: string) {
-        const msg = { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } };
-        child.stdin.write(JSON.stringify(msg) + '\n');
+        writeLine({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } });
       },
       interrupt() {
-        const req = { type: 'control_request', request_id: `int_${++controlSeq}`, request: { subtype: 'interrupt' } };
-        child.stdin.write(JSON.stringify(req) + '\n');
+        writeLine({ type: 'control_request', request_id: `int_${++controlSeq}`, request: { subtype: 'interrupt' } });
       },
       dispose() {
         child.stdin.end();

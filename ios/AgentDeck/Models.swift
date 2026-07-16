@@ -99,6 +99,16 @@ struct SessionInfo: Codable, Identifiable, Equatable {
     var isAttached: Bool { attached == true }
     var isReadOnly: Bool { readOnly == true }
 
+    /// Terminal command to pick this session up on the Mac (once the platform has revealed its id).
+    var resumeCommand: String? {
+        guard let nativeSessionId, !nativeSessionId.isEmpty else { return nil }
+        switch platform {
+        case .claude: return "claude --resume \(nativeSessionId)"
+        case .cursor: return "cursor-agent --resume \(nativeSessionId)"
+        case .codex: return "codex resume \(nativeSessionId)"
+        }
+    }
+
     static func == (lhs: SessionInfo, rhs: SessionInfo) -> Bool {
         lhs.id == rhs.id
             && lhs.title == rhs.title
@@ -291,6 +301,8 @@ enum ServerMessage {
     case sessionCreated(SessionInfo)
     case sessionUpdated(SessionInfo)
     case sessionRemoved(String)
+    /// A live terminal session was taken over: the conversation continues under `session` (new id).
+    case sessionTakeover(fromSessionId: String, session: SessionInfo)
     case event(sessionId: String, stored: StoredEvent)
     case history(sessionId: String, events: [StoredEvent])
     case dirs([String])
@@ -306,6 +318,7 @@ enum ServerMessage {
         let sessions: [SessionInfo]?
         let session: SessionInfo?
         let sessionId: String?
+        let fromSessionId: String?
         let seq: Int?
         let ts: Double?
         let event: AgentEvent?
@@ -333,6 +346,12 @@ enum ServerMessage {
             if let s = e.session { self = .sessionUpdated(s) } else { self = .unknown(e.type) }
         case "session.removed":
             self = .sessionRemoved(e.sessionId ?? "")
+        case "session.takeover":
+            if let from = e.fromSessionId, let s = e.session {
+                self = .sessionTakeover(fromSessionId: from, session: s)
+            } else {
+                self = .unknown(e.type)
+            }
         case "event":
             if let sid = e.sessionId, let seq = e.seq, let ev = e.event {
                 self = .event(sessionId: sid, stored: StoredEvent(seq: seq, ts: e.ts ?? 0, event: ev))

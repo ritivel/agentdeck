@@ -32,6 +32,10 @@ export interface CreateSessionOptions {
   permissionMode?: string;
   model?: string;
   title?: string;
+  /** Resume an existing platform-native session (take-over of a terminal session). */
+  resumeNativeId?: string;
+  /** Pre-populate the transcript (e.g. with the mirrored history of a taken-over session). */
+  seedTranscript?: StoredEvent[];
 }
 
 export class SessionManager {
@@ -49,6 +53,14 @@ export class SessionManager {
     return this.sessions.get(id);
   }
 
+  /** Whether a bridge-spawned session owns this platform-native session id. */
+  ownsNativeSession(nativeSessionId: string): boolean {
+    for (const s of this.sessions.values()) {
+      if (s.info.nativeSessionId === nativeSessionId) return true;
+    }
+    return false;
+  }
+
   create(opts: CreateSessionOptions): SessionInfo {
     const adapter = adapters[opts.platform];
     if (!adapter) throw new Error(`unknown platform: ${opts.platform}`);
@@ -62,6 +74,8 @@ export class SessionManager {
       cwd: opts.cwd,
       state: 'starting',
       permissionMode: opts.permissionMode ?? 'acceptEdits',
+      // Superseded by the fresh id the platform assigns on resume (init event).
+      nativeSessionId: opts.resumeNativeId,
       createdAt: now,
       updatedAt: now,
     };
@@ -70,6 +84,7 @@ export class SessionManager {
       cwd: opts.cwd,
       permissionMode: info.permissionMode,
       model: opts.model,
+      resumeNativeId: opts.resumeNativeId,
       onEvent: (e) => this.ingest(id, e),
       onNativeSessionId: (nativeId) => {
         const s = this.sessions.get(id);
@@ -80,12 +95,16 @@ export class SessionManager {
     });
 
     const session: Session = { info, handle, transcript: [], seq: 0 };
+    for (const e of (opts.seedTranscript ?? []).slice(-MAX_TRANSCRIPT)) {
+      session.transcript.push({ seq: ++session.seq, ts: e.ts, event: e.event });
+    }
     this.sessions.set(id, session);
     return info;
   }
 
   prompt(id: string, text: string) {
     const s = this.mustGet(id);
+    if (s.info.state === 'exited') throw new Error('This session\'s process has exited. Start a new session.');
     s.handle.send(text);
     this.ingest(id, { kind: 'user', text });
     this.setState(s, 'working');
@@ -109,6 +128,23 @@ export class SessionManager {
     s.handle.dispose();
     this.sessions.delete(id);
     this.cb.onSessionRemoved(id);
+  }
+
+  /**
+   * Hand the session off to another owner (e.g. a terminal `claude --resume`):
+   * dispose the process and wait for it to exit so the transcript on disk is
+   * fully flushed before the new owner resumes it.
+   */
+  async release(id: string): Promise<SessionInfo> {
+    const s = this.mustGet(id);
+    s.handle.dispose();
+    const deadline = Date.now() + 8000;
+    while (s.info.state !== 'exited' && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    this.sessions.delete(id);
+    this.cb.onSessionRemoved(id);
+    return s.info;
   }
 
   disposeAll() {

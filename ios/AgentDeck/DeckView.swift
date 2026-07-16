@@ -224,6 +224,20 @@ struct SessionCard: View {
             )
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if let command = session.resumeCommand {
+                Button {
+                    UIPasteboard.general.string = command
+                } label: {
+                    Label("Copy Resume Command", systemImage: "doc.on.doc")
+                }
+            }
+            Button(role: .destructive) {
+                client.archive(sessionId: session.id)
+            } label: {
+                Label(session.isAttached ? "Hide from Deck" : "Archive Session", systemImage: "archivebox")
+            }
+        }
         .onAppear { client.requestHistoryIfNeeded(session.id) }
     }
 }

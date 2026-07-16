@@ -4,22 +4,23 @@ struct ChatView: View {
     @EnvironmentObject var client: BridgeClient
     let sessionId: String
 
+    @Environment(\.dismiss) private var dismiss
     @State private var draft: String = ""
     @FocusState private var inputFocused: Bool
 
     private var session: SessionInfo? { client.session(id: sessionId) }
-    private var events: [StoredEvent] { client.transcripts[sessionId] ?? [] }
+    private var events: [StoredEvent] { client.transcripts[client.resolve(sessionId)] ?? [] }
     private var accent: Color { session?.platform.accent ?? .accentColor }
+    private var isReadOnly: Bool { session?.isReadOnly == true }
 
     var body: some View {
         VStack(spacing: 0) {
             transcript
             Divider()
-            if session?.isReadOnly == true {
-                readOnlyBar
-            } else {
-                inputBar
+            if isReadOnly {
+                takeoverHint
             }
+            inputBar
         }
         .navigationTitle(session?.title ?? "Session")
         .navigationBarTitleDisplayMode(.inline)
@@ -34,6 +35,9 @@ struct ChatView: View {
                     }
                 }
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                sessionMenu
+            }
         }
         .onAppear {
             client.requestHistoryIfNeeded(sessionId)
@@ -43,6 +47,30 @@ struct ChatView: View {
             if NotificationManager.shared.openSessionId == sessionId {
                 NotificationManager.shared.openSessionId = nil
             }
+        }
+    }
+
+    private var sessionMenu: some View {
+        Menu {
+            if let command = session?.resumeCommand {
+                Section("Open on your Mac") {
+                    Button {
+                        UIPasteboard.general.string = command
+                    } label: {
+                        Label("Copy Resume Command", systemImage: "doc.on.doc")
+                    }
+                    Text(command)
+                }
+            }
+            Button(role: .destructive) {
+                client.archive(sessionId: sessionId)
+                dismiss()
+            } label: {
+                Label(session?.isAttached == true ? "Hide from Deck" : "Archive Session",
+                      systemImage: "archivebox")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
         }
     }
 
@@ -77,23 +105,23 @@ struct ChatView: View {
         }
     }
 
-    private var readOnlyBar: some View {
+    private var takeoverHint: some View {
         HStack(spacing: 8) {
-            Image(systemName: "eye.fill").font(.caption)
-            Text("Live view — this session is running in a terminal")
+            Image(systemName: "dot.radiowaves.left.and.right").font(.caption)
+            Text("Terminal session — sending a message takes it over on this phone")
                 .font(.caption)
             Spacer(minLength: 0)
         }
         .foregroundStyle(.secondary)
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
         .background(Color(.secondarySystemBackground))
     }
 
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField("Message…", text: $draft, axis: .vertical)
+            TextField(isReadOnly ? "Take over & message…" : "Message…", text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...5)
                 .padding(.horizontal, 12)
@@ -102,7 +130,7 @@ struct ChatView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 18))
                 .focused($inputFocused)
 
-            if session?.state.isBusy == true {
+            if session?.state.isBusy == true && !isReadOnly {
                 Button {
                     client.interrupt(sessionId: sessionId)
                 } label: {
