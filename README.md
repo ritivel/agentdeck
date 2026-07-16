@@ -50,6 +50,16 @@ agentdeck share            # prints a public https URL + QR
 interrupts, notifications. Treat the link like a password (it contains your token); the
 URL rotates every run. Ctrl-C closes the tunnel.
 
+### The Android app
+
+Grab **AgentDeck-android.apk** from the
+[latest release](https://github.com/ritivel/agentdeck/releases/latest) (or build it:
+`cd android && ./gradlew assembleRelease`). Send it to any Android phone — WhatsApp,
+AirDrop-equivalent, USB — tap it, allow "install unknown apps", done. Native Kotlin +
+Jetpack Compose, ~11 MB. Pair by entering the host + token from `agentdeck pair`, or by
+opening the `agentdeck://pair` deep link. Same deck, chat, notifications, and takeover
+flows as iOS.
+
 ### The iPhone app
 
 Until it's on TestFlight, build it on-device with a free Apple ID:
@@ -151,6 +161,7 @@ bridge/            Node/TS daemon
   test/            fixture tests + e2e smoke tests
 ios/               SwiftUI iPhone app + the shared models/client (XcodeGen project)
 macos/             SwiftUI menu bar app (embeds the bridge)
+android/           Kotlin + Jetpack Compose app (Gradle; sideload-friendly APK)
 web/               mobile web app (no build step; served by the bridge, tunneled by `share`)
 PROTOCOL.md        the WebSocket protocol all clients implement
 install.sh         CLI installer (npm global + launchd service)
@@ -167,7 +178,7 @@ install.sh         CLI installer (npm global + launchd service)
 - [ ] Approve/deny tool permissions from the phone
 - [ ] APNs push (works when the app is backgrounded/closed)
 - [ ] E2E-encrypted relay for remote access without Tailscale
-- [ ] Android client
+- [x] Android client (sideloadable APK; Play Store later)
 
 ## License
 

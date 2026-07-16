@@ -6,3 +6,8 @@ ios/AgentDeck.xcodeproj/
 ios/DerivedData/
 xcuserdata/
 macos/.bridge-staging/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.kotlin/

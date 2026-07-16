@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Stacked cards glyph in the three platform accent colors. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#34C47C" android:pathData="M34,58 h40 a5,5 0 0 1 5,5 v14 a5,5 0 0 1 -5,5 h-40 a5,5 0 0 1 -5,-5 v-14 a5,5 0 0 1 5,-5 z" />
+    <path android:fillColor="#3F8CFF" android:pathData="M31,42 h46 a5,5 0 0 1 5,5 v14 a5,5 0 0 1 -5,5 h-46 a5,5 0 0 1 -5,-5 v-14 a5,5 0 0 1 5,-5 z" />
+    <path android:fillColor="#E8823A" android:pathData="M28,26 h52 a5,5 0 0 1 5,5 v14 a5,5 0 0 1 -5,5 h-52 a5,5 0 0 1 -5,-5 v-14 a5,5 0 0 1 5,-5 z" />
+</vector>
