@@ -4,7 +4,11 @@ import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { SessionManager, adapters } from './sessions.js';
+import { DismissedSessions } from './dismissed.js';
 import { LiveWatcher } from './live/watcher.js';
+import { claudeSource } from './live/claudeTranscripts.js';
+import { codexSource } from './live/codexTranscripts.js';
+import { cursorSource } from './live/cursorTranscripts.js';
 import type { Platform } from './events.js';
 
 const VERSION = '0.1.0';
@@ -57,14 +61,66 @@ export async function startServer(port: number, token: string, opts: { watchLive
     onEvent: (sessionId, stored) => broadcast({ type: 'event', sessionId, ...stored }),
   });
 
-  const liveWatcher = new LiveWatcher({
-    onSessionDiscovered: (session) => broadcast({ type: 'session.created', session }),
+  const dismissed = new DismissedSessions();
+
+  // Sessions handed off to a terminal (nativeSessionId → the bridge session id a
+  // client may still have open). When the transcript resurfaces as a live mirror,
+  // we broadcast a takeover so open views re-point to it seamlessly.
+  const recentlyReleased = new Map<string, string>();
+
+  // Terminal sessions running under the `agentdeck claude` PTY wrapper
+  // (nativeSessionId → the wrapper's socket). Prompts for these are injected
+  // into the terminal as keystrokes instead of forking a takeover process.
+  const ptyRegistry = new Map<string, WebSocket>();
+
+  const liveWatcher = new LiveWatcher([claudeSource, cursorSource, codexSource], {
+    onSessionDiscovered: (session) => {
+      broadcast({ type: 'session.created', session });
+      const oldId = session.nativeSessionId ? recentlyReleased.get(session.nativeSessionId) : undefined;
+      if (oldId) {
+        recentlyReleased.delete(session.nativeSessionId!);
+        broadcast({ type: 'session.takeover', fromSessionId: oldId, session });
+      }
+    },
     onSessionUpdated: (session) => broadcast({ type: 'session.updated', session }),
+    onSessionRemoved: (sessionId) => broadcast({ type: 'session.removed', sessionId }),
     onEvent: (sessionId, stored) => broadcast({ type: 'event', sessionId, ...stored }),
+    isBridgeOwned: (nativeSessionId) => manager.ownsNativeSession(nativeSessionId),
+    isDismissed: (nativeSessionId, updatedAt) => dismissed.isDismissed(nativeSessionId, updatedAt),
+    isControllable: (nativeSessionId) => ptyRegistry.has(nativeSessionId),
   });
 
   /** Combined view: bridge-spawned sessions plus discovered live terminal sessions. */
   const allSessions = () => [...manager.list(), ...liveWatcher.list()].sort((a, b) => b.updatedAt - a.updatedAt);
+
+  /**
+   * Take over a mirrored terminal session: spawn a bridge-owned process resuming the
+   * same platform session, carry the mirrored transcript over, retire the live copy,
+   * and deliver the prompt. The terminal's own process is untouched — if it keeps
+   * being used there, it continues as a separate fork and reappears in the deck.
+   */
+  const takeoverLiveSession = (live: NonNullable<ReturnType<LiveWatcher['get']>>, text: string) => {
+    const { info } = live;
+    if (!info.nativeSessionId) throw new Error('Cannot take over this session: its id is not known yet.');
+    if (!text.trim()) throw new Error('empty prompt');
+    if (!platformAvailability[info.platform]?.available) {
+      throw new Error(`Cannot take over this session: the ${info.platform} CLI is not installed on this machine.`);
+    }
+    const session = manager.create({
+      platform: info.platform,
+      cwd: info.cwd,
+      permissionMode: 'acceptEdits',
+      title: info.title,
+      resumeNativeId: info.nativeSessionId,
+      seedTranscript: live.transcript,
+    });
+    broadcast({ type: 'session.created', session });
+    // Tell clients where the conversation moved before the old id disappears.
+    broadcast({ type: 'session.takeover', fromSessionId: info.id, session });
+    liveWatcher.dismiss(info.id);
+    dismissed.dismiss(info.nativeSessionId);
+    manager.prompt(session.id, text);
+  };
 
   const platformAvailability: Record<string, { available: boolean }> = {};
   for (const [name, adapter] of Object.entries(adapters)) {
@@ -95,7 +151,16 @@ export async function startServer(port: number, token: string, opts: { watchLive
 
   wss.on('connection', (ws) => {
     clients.add(ws);
-    ws.on('close', () => clients.delete(ws));
+    const ownedPtys = new Set<string>();
+    ws.on('close', () => {
+      clients.delete(ws);
+      for (const nativeId of ownedPtys) {
+        if (ptyRegistry.get(nativeId) === ws) {
+          ptyRegistry.delete(nativeId);
+          liveWatcher.refreshControllable(nativeId);
+        }
+      }
+    });
 
     const reply = (msg: object) => ws.send(JSON.stringify(msg));
 
@@ -152,24 +217,84 @@ export async function startServer(port: number, token: string, opts: { watchLive
           reply({ type: 'history', sessionId: msg.sessionId, events });
           break;
         }
-        case 'prompt':
-          if (liveWatcher.get(msg.sessionId)) {
-            throw new Error('This session is running in a terminal and is view-only. Take-over from the phone is not supported yet.');
+        case 'pty.register': {
+          // An `agentdeck claude` wrapper announces it controls a terminal session.
+          const nativeId = String(msg.nativeSessionId ?? '');
+          if (!nativeId) throw new Error('pty.register requires nativeSessionId');
+          ptyRegistry.set(nativeId, ws);
+          ownedPtys.add(nativeId);
+          liveWatcher.refreshControllable(nativeId);
+          reply({ type: 'pty.registered', nativeSessionId: nativeId });
+          break;
+        }
+        case 'prompt': {
+          const live = liveWatcher.get(msg.sessionId);
+          if (live) {
+            const text = String(msg.text ?? '');
+            const pty = live.info.nativeSessionId ? ptyRegistry.get(live.info.nativeSessionId) : undefined;
+            if (pty && pty.readyState === WebSocket.OPEN) {
+              // Type it into the terminal; the transcript tailer mirrors the
+              // turn back to every device. No fork, no ownership change.
+              pty.send(JSON.stringify({ type: 'pty.input', text }));
+              break;
+            }
+            takeoverLiveSession(live, text);
+            break;
           }
           manager.prompt(msg.sessionId, String(msg.text ?? ''));
           break;
-        case 'interrupt':
-          if (liveWatcher.get(msg.sessionId)) {
-            throw new Error('Cannot interrupt a view-only terminal session.');
+        }
+        case 'interrupt': {
+          const live = liveWatcher.get(msg.sessionId);
+          if (live) {
+            const pty = live.info.nativeSessionId ? ptyRegistry.get(live.info.nativeSessionId) : undefined;
+            if (pty && pty.readyState === WebSocket.OPEN) {
+              pty.send(JSON.stringify({ type: 'pty.interrupt' }));
+              break;
+            }
+            throw new Error('Cannot interrupt a terminal session from here. Send a message to take it over first.');
           }
           manager.interrupt(msg.sessionId);
           break;
-        case 'session.archive':
+        }
+        case 'session.archive': {
           if (liveWatcher.get(msg.sessionId)) {
-            throw new Error('Cannot archive a view-only terminal session.');
+            // Hide a mirrored terminal session; it returns if it gets new activity.
+            const nativeId = liveWatcher.dismiss(msg.sessionId);
+            if (nativeId) dismissed.dismiss(nativeId);
+            break;
           }
+          // Remember the native id so the transcript left on disk doesn't
+          // resurface this session as a read-only live entry. The grace window
+          // covers the disposed process's final transcript flush (dispose ends
+          // stdin, then SIGTERMs after 3s).
+          const nativeId = manager.get(msg.sessionId)?.info.nativeSessionId;
           manager.archive(msg.sessionId);
+          if (nativeId) dismissed.dismiss(nativeId, 15_000);
           break;
+        }
+        case 'session.release': {
+          // Hand a session off to a terminal: stop our process (if we own it) and
+          // tell the caller what to resume. The transcript then resurfaces as a
+          // live mirror, so phones keep watching and can take it back by typing.
+          const live = liveWatcher.get(msg.sessionId);
+          if (live) {
+            // Already terminal-owned; the mirror stays as-is.
+            reply({ type: 'released', sessionId: msg.sessionId, nativeSessionId: live.info.nativeSessionId, cwd: live.info.cwd, title: live.info.title });
+            break;
+          }
+          const s = manager.get(msg.sessionId);
+          if (!s) throw new Error(`no such session: ${msg.sessionId}`);
+          const { nativeSessionId, cwd, title } = s.info;
+          manager
+            .release(msg.sessionId)
+            .then(() => {
+              if (nativeSessionId) recentlyReleased.set(nativeSessionId, msg.sessionId);
+              reply({ type: 'released', sessionId: msg.sessionId, nativeSessionId, cwd, title });
+            })
+            .catch((err: any) => reply({ type: 'error', message: err.message, inReplyTo: 'session.release' }));
+          break;
+        }
         case 'dirs.suggest':
           reply({ type: 'dirs', dirs: suggestDirs() });
           break;

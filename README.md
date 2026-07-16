@@ -76,6 +76,7 @@ roadmap (via a PermissionRequest hook that calls back into the bridge).
 ```
 bridge/            Node/TS daemon
   src/adapters/    claude.ts, cursor.ts, codex.ts — one file per platform
+  src/live/        discovery + mirroring of terminal-started sessions (one source per platform)
   test/            e2e smoke tests (drive a real agent through the WebSocket API)
 ios/               SwiftUI app (XcodeGen project)
 PROTOCOL.md        the WebSocket protocol both sides implement
@@ -83,18 +84,66 @@ PROTOCOL.md        the WebSocket protocol both sides implement
 
 ## Live sessions (mirror what's already running)
 
-AgentDeck doesn't only start *new* agents — it also mirrors Claude Code sessions you
-started in your **terminal or IDE**. The bridge watches the transcript files Claude Code
-writes (`~/.claude/projects/<slug>/<id>.jsonl`), lists every recent session, and tails it
-in real time to your phone — marked with a **LIVE** badge and shown read-only. Zero setup;
-nothing to enable in your terminal. (Disable with `agentdeck --no-watch`.)
+AgentDeck doesn't only start *new* agents — it also mirrors sessions you started in your
+**terminal or IDE**, on all three platforms. The bridge watches each CLI's on-disk
+transcript store, lists every recent session, and tails it in real time to your phone —
+marked with a **LIVE** badge and shown read-only. Zero setup; nothing to enable in your
+terminal. (Disable with `agentdeck --no-watch`.)
 
-Taking over a live session from the phone (via `claude --resume`) and Codex live sessions
-(`~/.codex/sessions/`) are the next steps here.
+| Platform | Transcript store watched | Notes |
+|---|---|---|
+| Claude Code | `~/.claude/projects/<slug>/<id>.jsonl` | JSONL, byte-offset tail |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (titles from `~/.codex/session_index.jsonl`) | covers `codex` CLI/TUI **and** the Codex desktop app |
+| Cursor | `~/.cursor/chats/<workspace>/<chatId>/store.db` | content-addressed SQLite blob store, polled for new message blobs |
+
+Mirroring is read-only file access, so it works even when the platform's CLI isn't
+installed or logged in (e.g. Codex desktop sessions appear without the `codex` CLI).
+
+Any session — spawned or mirrored — can be archived from the phone (long-press a card, or
+the `⋯` menu in the chat view); archived sessions stay hidden across bridge restarts unless
+their transcript gains new activity. The same menu offers **Copy Resume Command**
+(e.g. `claude --resume <id>`) to pick a phone-started session up on your Mac.
+
+Live sessions aren't view-only: **send a message to take one over**. The bridge resumes the
+same conversation as its own process (`claude --resume` / `cursor-agent --resume` /
+`codex exec resume`), carries the history across, and from then on it behaves like any
+phone-started session (requires that platform's CLI to be installed and logged in). Your
+terminal keeps its own copy — if you keep typing there, that fork reappears in the deck as
+a separate live session.
+
+## Continue on either device (WhatsApp-style)
+
+For true both-screens-at-once chat, start Claude through the wrapper:
+
+```bash
+agentdeck claude            # instead of `claude` — same TUI, same everything
+```
+
+The wrapper runs the real interactive Claude Code inside a PTY the bridge can type into
+(the same architecture Happy and tmux-based remotes use). A message sent from the phone is
+injected into your terminal as keystrokes — you literally see it typed — and the reply
+streams to both screens. One process, one session, zero forks. Interrupt from the phone
+sends Escape. `alias claude="agentdeck claude"` if you want this always.
+
+For sessions started with plain `claude`, ownership hops instead:
+
+- **Terminal → phone**: open the LIVE session in the app and type — sending a message takes
+  it over (the bridge resumes it as its own process, history intact).
+- **Phone → terminal**: run `agentdeck resume` on the Mac. It grabs your most recent session
+  (or `agentdeck resume <title/path fragment>` / `agentdeck sessions` to pick), releases it
+  from the bridge, and drops you into `claude --resume` in the session's own working
+  directory — under the wrapper, so it stays phone-drivable. Works without a running bridge
+  too (falls back to scanning transcripts).
+
+Either way the conversation never leaves a screen: whichever side doesn't own the process
+keeps a LIVE mirror, session ids are stable across hops, and open chat views re-point
+automatically. `agentdeck resume --print` prints the command instead of running it.
+
+Codex live sessions (`~/.codex/sessions/`) are the next step here.
 
 ## Roadmap
 
-- [ ] Take over a live terminal session from the phone (`claude --resume`)
+- [x] Take over a live terminal session from the phone (`claude --resume`)
 - [ ] Live discovery for Codex (`~/.codex/sessions/`) and Cursor
 - [ ] Approve/deny tool permissions from the phone
 - [ ] APNs push (works when the app is backgrounded/closed)

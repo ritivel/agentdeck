@@ -1,9 +1,11 @@
-import { readdirSync, statSync, existsSync, createReadStream, watch, type FSWatcher, openSync, readSync, closeSync, fstatSync } from 'node:fs';
+import { readdirSync, statSync, existsSync, createReadStream } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { AgentEvent } from '../events.js';
 import { contentToText } from '../adapters/util.js';
+import { JsonlTailer, readJsonlEvents } from './jsonlTail.js';
+import type { LiveSessionMeta, TranscriptSource } from './source.js';
 
 /**
  * Live discovery of already-running (or past) Claude Code sessions by reading the
@@ -15,14 +17,6 @@ import { contentToText } from '../adapters/util.js';
  */
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects');
-
-export interface LiveSessionMeta {
-  nativeSessionId: string;
-  title: string;
-  cwd: string;
-  updatedAt: number;
-  file: string;
-}
 
 /** Translate one parsed transcript JSONL object into zero or more AgentEvents. */
 export function transcriptLineToEvents(d: any): AgentEvent[] {
@@ -47,7 +41,11 @@ export function transcriptLineToEvents(d: any): AgentEvent[] {
         if (block?.type === 'tool_result') {
           out.push({ kind: 'tool.end', toolUseId: block.tool_use_id, output: contentToText(block.content).slice(0, 2000), isError: block.is_error === true });
         } else if (block?.type === 'text' && block.text) {
-          out.push({ kind: 'user', text: block.text });
+          // Same meta/noise filtering as the string branch: system reminders, hook
+          // output, and slash-command scaffolding are not real user prompts.
+          const t: string = block.text;
+          if (d.isMeta || t.startsWith('<local-command') || t.startsWith('<command-') || t.startsWith('<system-reminder')) continue;
+          out.push({ kind: 'user', text: t });
         }
       }
     }
@@ -58,7 +56,10 @@ export function transcriptLineToEvents(d: any): AgentEvent[] {
 /** Read metadata (id, cwd, title, mtime) from a transcript file without loading it all. */
 function readMeta(file: string): Promise<LiveSessionMeta | null> {
   return new Promise((resolve) => {
-    let nativeSessionId = '';
+    // The filename IS the session id. Lines are only a fallback: a resumed
+    // session's transcript carries the parent session's id in copied history.
+    const nameId = basename(file, '.jsonl');
+    let nativeSessionId = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(nameId) ? nameId : '';
     let cwd = '';
     let title = '';
     let resolved = false;
@@ -66,8 +67,13 @@ function readMeta(file: string): Promise<LiveSessionMeta | null> {
       if (resolved) return;
       resolved = true;
       if (!nativeSessionId) return resolve(null);
-      const st = statSync(file);
-      resolve({ nativeSessionId, title: title || 'terminal session', cwd: cwd || homedir(), updatedAt: st.mtimeMs, file });
+      try {
+        const st = statSync(file);
+        resolve({ platform: 'claude', nativeSessionId, title: title || 'terminal session', cwd: cwd || homedir(), updatedAt: st.mtimeMs, ref: file });
+      } catch {
+        // File vanished between scan and read (cleanup, /clear).
+        resolve(null);
+      }
     };
     const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }) });
     let count = 0;
@@ -127,111 +133,16 @@ export async function scanClaudeSessions(opts: { maxAgeMs?: number; limit?: numb
   return metas;
 }
 
-/** Read a whole transcript file into events (used for history on first attach). */
-export function readTranscriptEvents(file: string): Promise<AgentEvent[]> {
-  return new Promise((resolve) => {
-    const events: AgentEvent[] = [];
-    const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }) });
-    rl.on('line', (line) => {
-      try {
-        events.push(...transcriptLineToEvents(JSON.parse(line)));
-      } catch {
-        // ignore
-      }
-    });
-    rl.on('close', () => resolve(events));
-    rl.on('error', () => resolve(events));
-  });
-}
-
-/**
- * Tails a single transcript file, emitting AgentEvents for lines appended after
- * `startOffset` bytes. Debounces fs change notifications and handles truncation.
- */
-export class TranscriptTailer {
-  private watcher?: FSWatcher;
-  private offset: number;
-  private carry = '';
-  private reading = false;
-  private pending = false;
-
-  constructor(private file: string, startOffset: number, private onEvents: (events: AgentEvent[]) => void) {
-    this.offset = startOffset;
-  }
-
-  static byteLength(file: string): number {
-    try {
-      return statSync(file).size;
-    } catch {
-      return 0;
-    }
-  }
-
-  start() {
-    try {
-      this.watcher = watch(this.file, () => this.scheduleRead());
-    } catch {
-      // File may vanish; nothing to tail.
-    }
-  }
-
-  private scheduleRead() {
-    if (this.reading) {
-      this.pending = true;
-      return;
-    }
-    this.readNew();
-  }
-
-  private readNew() {
-    this.reading = true;
-    this.pending = false;
-    let fd: number | undefined;
-    try {
-      fd = openSync(this.file, 'r');
-      const size = fstatSync(fd).size;
-      if (size < this.offset) {
-        // truncated/rotated — restart from the top
-        this.offset = 0;
-        this.carry = '';
-      }
-      if (size > this.offset) {
-        const len = size - this.offset;
-        const buf = Buffer.allocUnsafe(len);
-        const read = readSync(fd, buf, 0, len, this.offset);
-        this.offset += read;
-        this.carry += buf.toString('utf8', 0, read);
-        const lines = this.carry.split('\n');
-        this.carry = lines.pop() ?? '';
-        const events: AgentEvent[] = [];
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            events.push(...transcriptLineToEvents(JSON.parse(trimmed)));
-          } catch {
-            // ignore partial/malformed
-          }
-        }
-        if (events.length) this.onEvents(events);
-      }
-    } catch {
-      // ignore transient read errors
-    } finally {
-      if (fd !== undefined) {
-        try {
-          closeSync(fd);
-        } catch {
-          // ignore
-        }
-      }
-      this.reading = false;
-      if (this.pending) this.readNew();
-    }
-  }
-
-  stop() {
-    this.watcher?.close();
-    this.watcher = undefined;
-  }
-}
+export const claudeSource: TranscriptSource = {
+  platform: 'claude',
+  scan: scanClaudeSessions,
+  exists: (ref) => existsSync(ref),
+  async attach(meta, onEvents) {
+    // Seed history from the file's current extent; the tailer picks up from
+    // the same offset, so lines appended while we read are never emitted twice.
+    const startOffset = JsonlTailer.byteLength(meta.ref);
+    const initialEvents = await readJsonlEvents(meta.ref, transcriptLineToEvents, startOffset);
+    const tailer = new JsonlTailer(meta.ref, startOffset, transcriptLineToEvents, onEvents);
+    return { initialEvents, start: () => tailer.start(), stop: () => tailer.stop() };
+  },
+};

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { AgentEvent, SessionInfo, StoredEvent } from '../events.js';
-import { scanClaudeSessions, readTranscriptEvents, TranscriptTailer, type LiveSessionMeta } from './claudeTranscripts.js';
+import type { LiveSessionMeta, LiveTail, TranscriptSource } from './source.js';
 
 const MAX_TRANSCRIPT = 500;
 /** A session whose file changed within this window is shown as actively working. */
@@ -8,7 +8,9 @@ const ACTIVE_WINDOW_MS = 20_000;
 
 interface LiveSession {
   info: SessionInfo;
-  tailer: TranscriptTailer;
+  ref: string;
+  source: TranscriptSource;
+  tail?: LiveTail;
   transcript: StoredEvent[];
   seq: number;
   activeTimer?: NodeJS.Timeout;
@@ -17,26 +19,38 @@ interface LiveSession {
 export interface LiveWatcherCallbacks {
   onSessionDiscovered: (info: SessionInfo) => void;
   onSessionUpdated: (info: SessionInfo) => void;
+  onSessionRemoved: (sessionId: string) => void;
   onEvent: (sessionId: string, stored: StoredEvent) => void;
+  /**
+   * Bridge-spawned sessions also persist transcripts to the platform stores;
+   * without this check they would reappear here as read-only duplicates.
+   */
+  isBridgeOwned: (nativeSessionId: string) => boolean;
+  /** User-archived sessions stay hidden until their transcript gains new activity. */
+  isDismissed: (nativeSessionId: string, updatedAt: number) => boolean;
+  /** True when a PTY wrapper controls this session — it can accept typed input. */
+  isControllable: (nativeSessionId: string) => boolean;
 }
 
 /**
- * Discovers and live-tails Claude Code terminal sessions, exposing them as
- * read-only bridge sessions (attached=true, readOnly=true). Rescans periodically
- * so sessions started after the bridge launched still appear.
+ * Discovers and live-tails terminal/IDE-owned agent sessions across all platform
+ * transcript sources, exposing them as read-only bridge sessions (attached=true,
+ * readOnly=true). Rescans periodically so sessions started after the bridge
+ * launched still appear.
  */
 export class LiveWatcher {
-  private byNativeId = new Map<string, LiveSession>();
+  /** Keyed by `${platform}:${nativeSessionId}` — native ids are only unique per platform. */
+  private byKey = new Map<string, LiveSession>();
   private rescanTimer?: NodeJS.Timeout;
 
-  constructor(private cb: LiveWatcherCallbacks) {}
+  constructor(private sources: TranscriptSource[], private cb: LiveWatcherCallbacks) {}
 
   list(): SessionInfo[] {
-    return [...this.byNativeId.values()].map((s) => s.info);
+    return [...this.byKey.values()].map((s) => s.info);
   }
 
   get(sessionId: string): LiveSession | undefined {
-    for (const s of this.byNativeId.values()) if (s.info.id === sessionId) return s;
+    for (const s of this.byKey.values()) if (s.info.id === sessionId) return s;
     return undefined;
   }
 
@@ -54,40 +68,94 @@ export class LiveWatcher {
 
   stop() {
     if (this.rescanTimer) clearInterval(this.rescanTimer);
-    for (const s of this.byNativeId.values()) {
-      s.tailer.stop();
+    for (const s of this.byKey.values()) {
+      s.tail?.stop();
       if (s.activeTimer) clearTimeout(s.activeTimer);
     }
-    this.byNativeId.clear();
+    this.byKey.clear();
+  }
+
+  private key(platform: string, nativeSessionId: string): string {
+    return `${platform}:${nativeSessionId}`;
   }
 
   private async rescan() {
-    let metas: LiveSessionMeta[];
-    try {
-      metas = await scanClaudeSessions();
-    } catch {
-      return;
+    // Drop sessions whose transcript vanished or that the bridge now owns
+    // (e.g. its nativeSessionId arrived after we attached).
+    for (const [key, s] of this.byKey) {
+      if (this.cb.isBridgeOwned(s.info.nativeSessionId!) || !s.source.exists(s.ref)) this.detach(key);
     }
-    for (const meta of metas) {
-      const existing = this.byNativeId.get(meta.nativeSessionId);
-      if (existing) {
-        if (meta.title !== existing.info.title || meta.updatedAt > existing.info.updatedAt) {
-          existing.info.title = meta.title;
-          existing.info.updatedAt = meta.updatedAt;
-          this.cb.onSessionUpdated(existing.info);
-        }
+
+    for (const source of this.sources) {
+      let metas: LiveSessionMeta[];
+      try {
+        metas = await source.scan();
+      } catch {
         continue;
       }
-      await this.attach(meta);
+      for (const meta of metas) {
+        if (this.cb.isBridgeOwned(meta.nativeSessionId)) continue;
+        if (this.cb.isDismissed(meta.nativeSessionId, meta.updatedAt)) continue;
+        const existing = this.byKey.get(this.key(meta.platform, meta.nativeSessionId));
+        if (existing) {
+          let changed = false;
+          if (meta.title !== existing.info.title) {
+            existing.info.title = meta.title;
+            changed = true;
+          }
+          if (meta.updatedAt > existing.info.updatedAt) {
+            existing.info.updatedAt = meta.updatedAt;
+            changed = true;
+          }
+          if (changed) this.cb.onSessionUpdated(existing.info);
+          continue;
+        }
+        await this.attach(source, meta);
+      }
     }
   }
 
-  private async attach(meta: LiveSessionMeta) {
+  /** Re-evaluate whether a session accepts input (PTY wrapper came or went). */
+  refreshControllable(nativeSessionId: string) {
+    const s = [...this.byKey.values()].find((x) => x.info.nativeSessionId === nativeSessionId);
+    if (!s) {
+      // Not discovered yet — pull it in now so the phone sees it promptly.
+      void this.rescan();
+      return;
+    }
+    const readOnly = !this.cb.isControllable(nativeSessionId);
+    if (s.info.readOnly !== readOnly) {
+      s.info.readOnly = readOnly;
+      this.cb.onSessionUpdated(s.info);
+    }
+  }
+
+  /** Remove a live session by its bridge id, returning the native id so the caller can persist the dismissal. */
+  dismiss(sessionId: string): string | undefined {
+    for (const [key, s] of this.byKey) {
+      if (s.info.id === sessionId) {
+        this.detach(key);
+        return s.info.nativeSessionId;
+      }
+    }
+    return undefined;
+  }
+
+  private detach(key: string) {
+    const s = this.byKey.get(key);
+    if (!s) return;
+    s.tail?.stop();
+    if (s.activeTimer) clearTimeout(s.activeTimer);
+    this.byKey.delete(key);
+    this.cb.onSessionRemoved(s.info.id);
+  }
+
+  private async attach(source: TranscriptSource, meta: LiveSessionMeta) {
     const id = `live_${randomBytes(4).toString('hex')}`;
     const now = Date.now();
     const info: SessionInfo = {
       id,
-      platform: 'claude',
+      platform: meta.platform,
       title: meta.title,
       cwd: meta.cwd,
       state: now - meta.updatedAt < ACTIVE_WINDOW_MS ? 'working' : 'idle',
@@ -96,31 +164,38 @@ export class LiveWatcher {
       createdAt: meta.updatedAt,
       updatedAt: meta.updatedAt,
       attached: true,
-      readOnly: true,
+      readOnly: !this.cb.isControllable(meta.nativeSessionId),
     };
-
-    // Seed transcript from the existing file, then tail from end of file.
-    const startOffset = TranscriptTailer.byteLength(meta.file);
-    const initialEvents = await readTranscriptEvents(meta.file);
 
     const session: LiveSession = {
       info,
+      ref: meta.ref,
+      source,
       transcript: [],
       seq: 0,
-      tailer: new TranscriptTailer(meta.file, startOffset, (events) => this.ingest(id, events)),
     };
-    for (const e of initialEvents) {
+    // Register before the (async) attach so a concurrent rescan can't double-attach.
+    this.byKey.set(this.key(meta.platform, meta.nativeSessionId), session);
+
+    let tail: LiveTail;
+    try {
+      tail = await source.attach(meta, (events) => this.ingest(id, events));
+    } catch {
+      this.byKey.delete(this.key(meta.platform, meta.nativeSessionId));
+      return;
+    }
+    session.tail = tail;
+    for (const e of tail.initialEvents) {
       const stored: StoredEvent = { seq: ++session.seq, ts: info.updatedAt, event: e };
       session.transcript.push(stored);
     }
     if (session.transcript.length > MAX_TRANSCRIPT) {
       session.transcript.splice(0, session.transcript.length - MAX_TRANSCRIPT);
     }
-    const last = [...initialEvents].reverse().find((e) => e.kind === 'text') as { text: string } | undefined;
+    const last = [...tail.initialEvents].reverse().find((e) => e.kind === 'text') as { text: string } | undefined;
     if (last) info.lastText = last.text.length > 120 ? last.text.slice(0, 117) + '…' : last.text;
 
-    this.byNativeId.set(meta.nativeSessionId, session);
-    session.tailer.start();
+    tail.start();
     this.cb.onSessionDiscovered(info);
   }
 
