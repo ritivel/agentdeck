@@ -1,8 +1,22 @@
 {
   "name": "@agentdeck/bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AgentDeck bridge daemon: control local coding agents (Claude Code, Cursor, Codex) from your phone",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ritivel/agentdeck.git",
+    "directory": "bridge"
+  },
+  "homepage": "https://github.com/ritivel/agentdeck#readme",
+  "keywords": ["claude-code", "cursor", "codex", "ai-agents", "remote-control", "ios"],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "files": [
+    "dist"
+  ],
   "bin": {
     "agentdeck": "dist/index.js"
   },
@@ -11,6 +25,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
+    "prepublishOnly": "tsc",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true"
   },
   "dependencies": {

@@ -5,3 +5,4 @@ dist/
 ios/AgentDeck.xcodeproj/
 ios/DerivedData/
 xcuserdata/
+macos/.bridge-staging/

@@ -1,75 +1,129 @@
 # AgentDeck
 
-Control your local coding agents — **Claude Code**, **Cursor**, and **Codex** — from your phone.
+One deck for all your coding agents — **Claude Code**, **Cursor**, and **Codex** — on your
+**Mac menu bar** and your **iPhone**.
 
-Your agents keep running on your Mac, in your repos, with your credentials. AgentDeck gives you
-a deck of them on iOS: swipe **up/down** to switch platforms, swipe **left/right** to switch
-between agents/sessions, get notified when an agent finishes or gets blocked, and reply from anywhere.
+Your agents keep running on your Mac, in your repos, with your credentials. AgentDeck shows
+every session — including ones you started in a terminal, IDE, or the Codex desktop app —
+live in one place: chat with them, start new ones, interrupt them, get notified when they
+finish or get blocked, and hand sessions between your Mac and your phone.
+
+## Install
+
+### The Mac app (easiest)
+
+Download **AgentDeck-mac.zip** from the
+[latest release](https://github.com/ritivel/agentdeck/releases/latest), unzip, and drag
+**AgentDeck.app** to Applications. That's it — the app ships its own bridge runtime
+(no Node.js required), lives in your menu bar, and:
+
+- starts/supervises the bridge daemon (toggle **Launch at Login** in Settings)
+- shows all sessions across the three platforms; click any to chat
+- shows a **QR code** to pair your iPhone (menu bar → *Pair iPhone…*)
+
+> First launch on a fresh Mac: right-click → Open (the app is ad-hoc signed, not notarized yet).
+
+### Or the CLI (for terminal people)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ritivel/agentdeck/main/install.sh | bash
+```
+
+This installs the `agentdeck` command (needs Node 22.5+), registers a login service
+(`agentdeck service install`), and prints the pairing QR (`agentdeck pair`). One of the
+agent CLIs (`claude`, `cursor-agent`, `codex`) should be installed and logged in.
+
+### The iPhone app
+
+Until it's on TestFlight, build it on-device with a free Apple ID:
+
+```bash
+cd ios && xcodegen generate && open AgentDeck.xcodeproj
+```
+
+Select your personal team under *Signing & Capabilities*, plug in your iPhone, press Run.
+Then scan the QR from the Mac app (or the `agentdeck pair` output). On the same Wi-Fi the
+app also discovers the bridge automatically via Bonjour.
+
+**Remote access from anywhere:** install [Tailscale](https://tailscale.com) on both
+devices, then connect the app to your Mac's tailnet name. No port forwarding — never expose
+the bridge port to the raw internet.
+
+## What you can do
+
+- **See everything.** The bridge watches each agent's on-disk transcript store, so sessions
+  you started in a terminal, in your IDE, or in the Codex desktop app appear automatically
+  with a LIVE badge and stream in real time. Zero setup.
+- **Chat from either screen.** Start sessions from the Mac app or the phone, in any project
+  directory, with a chosen permission mode. Interrupt mid-turn. Notifications fire when an
+  agent finishes, errors, or gets blocked on permissions.
+- **Take over a terminal session** by just messaging it — the bridge resumes the same
+  conversation as its own process (`claude --resume` / `cursor-agent --resume` /
+  `codex exec resume`), history intact.
+- **Hand back to the terminal** with `agentdeck resume` (or *Copy Resume Command* in the
+  app). Session ids stay stable across hops; open views re-point automatically.
+- **True both-screens mode:** run `agentdeck claude` instead of `claude` — the same
+  interactive TUI, but phone messages are typed into your terminal and replies stream to
+  both screens. `alias claude="agentdeck claude"` if you want this always.
 
 ## How it works
 
 ```
-┌──────────────┐   WebSocket (LAN / Tailscale)   ┌───────────────────────────────┐
-│  iOS app     │ ◄─────────────────────────────► │  bridge daemon (your Mac)     │
-│  (SwiftUI)   │      Bonjour discovery +        │  ├─ claude  -p --stream-json  │
-│              │      token auth (QR pairing)    │  ├─ cursor-agent -p --resume  │
-└──────────────┘                                 │  └─ codex exec --json         │
-                                                 └───────────────────────────────┘
+┌──────────────┐                       ┌───────────────────────────────────────┐
+│  iOS app     │   WebSocket (LAN /    │  your Mac                             │
+│  (SwiftUI)   │ ◄───── Tailscale) ──► │  ┌─────────────────────────────────┐  │
+└──────────────┘   Bonjour + QR/token  │  │ bridge daemon (Node/TS)         │  │
+┌──────────────┐                       │  │  ├─ spawns: claude / cursor-    │  │
+│  Mac app     │ ◄── localhost ──────► │  │  │  agent / codex (JSON modes)  │  │
+│  (menu bar,  │                       │  │  └─ mirrors: ~/.claude, ~/.codex,│ │
+│   SwiftUI)   │   manages the daemon  │  │     ~/.cursor transcript stores │  │
+└──────────────┘                       │  └─────────────────────────────────┘  │
+                                       └───────────────────────────────────────┘
 ```
 
 - **bridge/** — Node/TypeScript daemon. Spawns and manages agent CLI processes through
   thin protocol-based adapters (no output scraping), normalizes their events into one
   schema, and serves them over an authenticated WebSocket. See [PROTOCOL.md](PROTOCOL.md).
-- **ios/** — SwiftUI app. Discovers bridges via Bonjour, pairs with a token (QR),
-  streams transcripts live, sends prompts/interrupts, fires local notifications on
-  turn completion, permission denials, and errors.
+- **ios/** — SwiftUI iPhone app. Bonjour discovery, QR pairing, live transcripts,
+  notifications. Shares its models/client/transcript views with the Mac app.
+- **macos/** — SwiftUI menu bar app. Bundles the bridge + a Node runtime into
+  `AgentDeck.app/Contents/Resources/bridge`, supervises it, and hosts the same deck UI
+  in a native window.
 
-### Communication choice
+The phone talks **directly to your Mac** — no cloud in the middle. An optional
+E2E-encrypted relay (the model proven by [Happy](https://github.com/slopus/happy)) is on
+the roadmap.
 
-The phone talks **directly to your Mac** — no cloud in the middle:
+## Platform support
 
-1. **Same Wi-Fi**: zero config. The bridge advertises `_agentdeck._tcp` via Bonjour and the app finds it.
-2. **Anywhere else**: install [Tailscale](https://tailscale.com) on both devices and connect to the
-   Mac's tailnet address. Same protocol, zero code difference.
-3. (Roadmap) An optional E2E-encrypted relay for no-VPN remote access, following the model
-   proven by [Happy](https://github.com/slopus/happy).
-
-## Quick start
-
-### 1. Bridge (on your Mac)
-
-```bash
-cd bridge
-npm install
-npm run dev        # prints a QR code + token
-```
-
-Requirements: Node 20+, and at least one agent CLI installed and logged in
-(`claude`, `cursor-agent`, or `codex`).
-
-### 2. iOS app
-
-```bash
-cd ios
-xcodegen generate
-open AgentDeck.xcodeproj   # run on simulator or device
-```
-
-On first launch, pick your Mac from the discovered list (or enter host/port manually)
-and paste the token printed by the bridge.
-
-## Platform adapters
-
-| Platform | Mechanism | Multi-turn | Status |
+| Platform | Start / chat / interrupt | Live mirror of external sessions | Take over |
 |---|---|---|---|
-| Claude Code | one long-lived `claude -p --input-format stream-json --output-format stream-json` per session; interrupts via the stream-json control protocol | native (same process) | ✅ tested e2e |
-| Cursor | `cursor-agent create-chat` once, then `cursor-agent -p --output-format stream-json --resume <chatId>` per turn | via `--resume` | ⚠️ implemented, needs `cursor-agent login` to test |
-| Codex | `codex exec --json`, then `codex exec resume <threadId> --json` per turn | via `resume` | ⚠️ implemented, CLI not installed here yet |
+| Claude Code | ✅ (`claude -p` stream-json, long-lived process) | ✅ `~/.claude/projects/**.jsonl` | ✅ `--resume`, PTY wrapper for both-screens mode |
+| Cursor | ✅ (`cursor-agent -p --resume <chatId>` per turn) | ✅ `~/.cursor/chats/**/store.db` (SQLite blob store) | ✅ `--resume` (CLI must be logged in) |
+| Codex | ✅ (`codex exec --json`, `resume <threadId>`) | ✅ `~/.codex/sessions/**/rollout-*.jsonl` — including **Codex desktop app** sessions | ✅ `codex exec resume` (CLI required) |
 
-Permission handling (MVP): each session is created with a permission mode
-(`acceptEdits` default, `plan`, `bypassPermissions`, `manual`). Denied tool calls surface as
-`permission.denied` events → phone notifications. Interactive approve-from-phone is on the
-roadmap (via a PermissionRequest hook that calls back into the bridge).
+Mirroring is read-only file access, so it works even where the CLI isn't installed or
+logged in. Permission modes per session: `acceptEdits` (default), `plan`,
+`bypassPermissions`, `manual`; denied tools surface as notifications.
+
+## Building from source
+
+```bash
+# bridge
+cd bridge && npm ci && npm run dev          # daemon + pairing QR
+
+# iOS + Mac apps (XcodeGen)
+cd ios && xcodegen generate
+xcodebuild -scheme AgentDeck    -destination 'platform=iOS Simulator,name=iPhone 17' build
+xcodebuild -scheme AgentDeckMac -destination 'platform=macOS' build   # bundles the bridge
+
+# tests
+cd bridge && npx tsx test/live.mjs          # live-mirror fixtures, no CLIs needed
+node test/e2e.mjs claude /tmp/proj "Reply PONG" 8787   # against a running bridge
+```
+
+Releases are cut by pushing a `v*` tag — CI builds the Mac app zip + npm tarball and
+attaches them to a GitHub Release.
 
 ## Repo layout
 
@@ -77,75 +131,24 @@ roadmap (via a PermissionRequest hook that calls back into the bridge).
 bridge/            Node/TS daemon
   src/adapters/    claude.ts, cursor.ts, codex.ts — one file per platform
   src/live/        discovery + mirroring of terminal-started sessions (one source per platform)
-  test/            e2e smoke tests (drive a real agent through the WebSocket API)
-ios/               SwiftUI app (XcodeGen project)
-PROTOCOL.md        the WebSocket protocol both sides implement
+  test/            fixture tests + e2e smoke tests
+ios/               SwiftUI iPhone app + the shared models/client (XcodeGen project)
+macos/             SwiftUI menu bar app (embeds the bridge)
+PROTOCOL.md        the WebSocket protocol all clients implement
+install.sh         CLI installer (npm global + launchd service)
 ```
-
-## Live sessions (mirror what's already running)
-
-AgentDeck doesn't only start *new* agents — it also mirrors sessions you started in your
-**terminal or IDE**, on all three platforms. The bridge watches each CLI's on-disk
-transcript store, lists every recent session, and tails it in real time to your phone —
-marked with a **LIVE** badge and shown read-only. Zero setup; nothing to enable in your
-terminal. (Disable with `agentdeck --no-watch`.)
-
-| Platform | Transcript store watched | Notes |
-|---|---|---|
-| Claude Code | `~/.claude/projects/<slug>/<id>.jsonl` | JSONL, byte-offset tail |
-| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (titles from `~/.codex/session_index.jsonl`) | covers `codex` CLI/TUI **and** the Codex desktop app |
-| Cursor | `~/.cursor/chats/<workspace>/<chatId>/store.db` | content-addressed SQLite blob store, polled for new message blobs |
-
-Mirroring is read-only file access, so it works even when the platform's CLI isn't
-installed or logged in (e.g. Codex desktop sessions appear without the `codex` CLI).
-
-Any session — spawned or mirrored — can be archived from the phone (long-press a card, or
-the `⋯` menu in the chat view); archived sessions stay hidden across bridge restarts unless
-their transcript gains new activity. The same menu offers **Copy Resume Command**
-(e.g. `claude --resume <id>`) to pick a phone-started session up on your Mac.
-
-Live sessions aren't view-only: **send a message to take one over**. The bridge resumes the
-same conversation as its own process (`claude --resume` / `cursor-agent --resume` /
-`codex exec resume`), carries the history across, and from then on it behaves like any
-phone-started session (requires that platform's CLI to be installed and logged in). Your
-terminal keeps its own copy — if you keep typing there, that fork reappears in the deck as
-a separate live session.
-
-## Continue on either device (WhatsApp-style)
-
-For true both-screens-at-once chat, start Claude through the wrapper:
-
-```bash
-agentdeck claude            # instead of `claude` — same TUI, same everything
-```
-
-The wrapper runs the real interactive Claude Code inside a PTY the bridge can type into
-(the same architecture Happy and tmux-based remotes use). A message sent from the phone is
-injected into your terminal as keystrokes — you literally see it typed — and the reply
-streams to both screens. One process, one session, zero forks. Interrupt from the phone
-sends Escape. `alias claude="agentdeck claude"` if you want this always.
-
-For sessions started with plain `claude`, ownership hops instead:
-
-- **Terminal → phone**: open the LIVE session in the app and type — sending a message takes
-  it over (the bridge resumes it as its own process, history intact).
-- **Phone → terminal**: run `agentdeck resume` on the Mac. It grabs your most recent session
-  (or `agentdeck resume <title/path fragment>` / `agentdeck sessions` to pick), releases it
-  from the bridge, and drops you into `claude --resume` in the session's own working
-  directory — under the wrapper, so it stays phone-drivable. Works without a running bridge
-  too (falls back to scanning transcripts).
-
-Either way the conversation never leaves a screen: whichever side doesn't own the process
-keeps a LIVE mirror, session ids are stable across hops, and open chat views re-point
-automatically. `agentdeck resume --print` prints the command instead of running it.
-
-Codex live sessions (`~/.codex/sessions/`) are the next step here.
 
 ## Roadmap
 
-- [x] Take over a live terminal session from the phone (`claude --resume`)
-- [ ] Live discovery for Codex (`~/.codex/sessions/`) and Cursor
+- [x] Live discovery + mirroring for all three platforms
+- [x] Mac menu bar app with embedded bridge and pairing QR
+- [ ] TestFlight distribution for the iOS app
+- [ ] Notarized + Homebrew-cask Mac app distribution
 - [ ] Approve/deny tool permissions from the phone
 - [ ] APNs push (works when the app is backgrounded/closed)
 - [ ] E2E-encrypted relay for remote access without Tailscale
 - [ ] Android client
+
+## License
+
+MIT

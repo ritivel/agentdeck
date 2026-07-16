@@ -48,3 +48,37 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.ritivel.agentdeck
         GENERATE_INFOPLIST_FILE: NO
         TARGETED_DEVICE_FAMILY: "1,2"
+
+  AgentDeckMac:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: ../macos/AgentDeckMac
+      - path: AgentDeck/Models.swift
+      - path: AgentDeck/BridgeClient.swift
+      - path: AgentDeck/TranscriptRows.swift
+      - path: AgentDeck/Notifications.swift
+    info:
+      path: ../macos/AgentDeckMac/Info.plist
+      properties:
+        CFBundleDisplayName: AgentDeck
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        LSUIElement: true
+        NSHumanReadableCopyright: "MIT License"
+    postBuildScripts:
+      - name: Bundle bridge runtime
+        script: |
+          "$SRCROOT/../macos/scripts/bundle-bridge.sh"
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ritivel.agentdeck.mac
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_APP_SANDBOX: NO
+        COMBINE_HIDPI_IMAGES: YES

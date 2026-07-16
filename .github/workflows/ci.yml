@@ -37,3 +37,39 @@ jobs:
           xcodebuild -project ios/AgentDeck.xcodeproj -scheme AgentDeck \
             -destination "platform=iOS Simulator,name=${DEST}" \
             CODE_SIGNING_ALLOWED=NO build | tail -50
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Build Mac app (bundles bridge)
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/AgentDeck.xcodeproj -scheme AgentDeckMac \
+            -destination 'platform=macOS' build | tail -30
+
+  bridge-tests:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - run: npm ci
+      - name: Live-mirror fixture tests
+        run: npx tsx test/live.mjs

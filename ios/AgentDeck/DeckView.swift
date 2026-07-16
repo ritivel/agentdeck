@@ -216,7 +216,7 @@ struct SessionCard: View {
             }
             .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Color(.secondarySystemBackground))
+            .background(Color.bubbleBackground)
             .clipShape(RoundedRectangle(cornerRadius: 20))
             .overlay(
                 RoundedRectangle(cornerRadius: 20)
@@ -227,7 +227,7 @@ struct SessionCard: View {
         .contextMenu {
             if let command = session.resumeCommand {
                 Button {
-                    UIPasteboard.general.string = command
+                    copyToPasteboard(command)
                 } label: {
                     Label("Copy Resume Command", systemImage: "doc.on.doc")
                 }
@@ -259,7 +259,7 @@ struct CreateSessionCard: View {
                     .foregroundStyle(.primary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(.secondarySystemBackground))
+            .background(Color.bubbleBackground)
             .clipShape(RoundedRectangle(cornerRadius: 20))
             .overlay(
                 RoundedRectangle(cornerRadius: 20)
