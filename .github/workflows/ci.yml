@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+        working-directory: ios
+      - name: Build
+        run: |
+          set -o pipefail
+          DEST=$(xcrun simctl list devices available | grep -m1 -o 'iPhone [0-9][^ (]*' | head -1 || echo "iPhone 16")
+          xcodebuild -project ios/AgentDeck.xcodeproj -scheme AgentDeck \
+            -destination "platform=iOS Simulator,name=${DEST}" \
+            CODE_SIGNING_ALLOWED=NO build | tail -50
