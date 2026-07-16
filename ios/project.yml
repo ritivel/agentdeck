@@ -35,6 +35,10 @@ targets:
         NSLocalNetworkUsageDescription: "AgentDeck discovers and connects to your Mac's AgentDeck bridge on the local network to control your coding agents."
         NSBonjourServices:
           - "_agentdeck._tcp"
+        CFBundleURLTypes:
+          - CFBundleURLName: com.ritivel.agentdeck.pair
+            CFBundleURLSchemes:
+              - agentdeck
         NSCameraUsageDescription: "AgentDeck uses the camera to scan the pairing QR code shown by the bridge."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

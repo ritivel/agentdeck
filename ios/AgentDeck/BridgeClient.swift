@@ -73,6 +73,17 @@ final class BridgeClient: NSObject, ObservableObject {
         openSocket(with: t)
     }
 
+    /// Handle an `agentdeck://pair?host=..&port=..&token=..` URL (QR payload / deep link).
+    func handlePairingURL(_ url: URL) {
+        guard url.scheme == "agentdeck",
+              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let host = comps.queryItems?.first(where: { $0.name == "host" })?.value,
+              let token = comps.queryItems?.first(where: { $0.name == "token" })?.value
+        else { return }
+        let port = comps.queryItems?.first(where: { $0.name == "port" })?.value.flatMap(Int.init) ?? 8787
+        connect(host: host, port: port, token: token)
+    }
+
     func autoConnect() {
         guard let t = target else { return }
         explicitlyDisconnected = false

@@ -14,6 +14,9 @@ struct AgentDeckApp: App {
                     wireNotifications()
                     client.autoConnect()
                 }
+                .onOpenURL { url in
+                    client.handlePairingURL(url)
+                }
                 .onChange(of: scenePhase) { _, phase in
                     NotificationManager.shared.isForeground = (phase == .active)
                     if phase == .active {
