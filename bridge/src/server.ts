@@ -1,10 +1,41 @@
 import { createServer, type IncomingMessage } from 'node:http';
-import { hostname } from 'node:os';
+import { readdirSync, existsSync } from 'node:fs';
+import { homedir, hostname } from 'node:os';
+import { join } from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { SessionManager, adapters } from './sessions.js';
 import type { Platform } from './events.js';
 
 const VERSION = '0.1.0';
+
+/** Git repos up to two levels under common code roots — cwd suggestions for new sessions. */
+function suggestDirs(): string[] {
+  const home = homedir();
+  const roots = ['Repos', 'Projects', 'Code', 'dev', 'src', 'workspace', 'Developer']
+    .map((d) => join(home, d))
+    .filter(existsSync);
+  const found: string[] = [];
+  const scan = (dir: string, depth: number) => {
+    if (found.length >= 100) return;
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    if (entries.includes('.git')) {
+      found.push(dir);
+      return;
+    }
+    if (depth <= 0) return;
+    for (const name of entries) {
+      if (name.startsWith('.')) continue;
+      scan(join(dir, name), depth - 1);
+    }
+  };
+  for (const root of roots) scan(root, 3);
+  return found.sort();
+}
 
 export interface BridgeServer {
   port: number;
@@ -115,6 +146,9 @@ export async function startServer(port: number, token: string): Promise<BridgeSe
           break;
         case 'session.archive':
           manager.archive(msg.sessionId);
+          break;
+        case 'dirs.suggest':
+          reply({ type: 'dirs', dirs: suggestDirs() });
           break;
         case 'ping':
           reply({ type: 'pong' });

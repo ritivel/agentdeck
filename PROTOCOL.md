@@ -60,6 +60,7 @@ Every event stored/sent by the bridge is wrapped with metadata:
 | `prompt` | `sessionId`, `text` | send a user message to the agent |
 | `interrupt` | `sessionId` | stop the current turn |
 | `session.archive` | `sessionId` | dispose process, remove from list |
+| `dirs.suggest` | — | server replies `dirs` with git repos found under common code roots |
 | `ping` | — | server replies `pong` |
 
 ## Server → Client
@@ -73,6 +74,7 @@ Every event stored/sent by the bridge is wrapped with metadata:
 | `session.removed` | `sessionId` | broadcast |
 | `event` | `sessionId`, `seq`, `ts`, `event: AgentEvent` | live transcript stream, broadcast |
 | `history` | `sessionId`, `events: [{seq,ts,event}]` | reply to `session.history` |
+| `dirs` | `dirs: string[]` | reply to `dirs.suggest` |
 | `error` | `message`, `inReplyTo?` | |
 | `pong` | — | |
 
