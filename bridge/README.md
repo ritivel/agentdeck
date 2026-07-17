@@ -1,4 +1,4 @@
-# @agentdeck/bridge
+# agentdeck-bridge
 
 Use Claude Code (and Cursor, Codex) **from your phone**: see every session live,
 chat, approve tool calls, and hand sessions between your terminal and your phone
@@ -11,9 +11,12 @@ grab **AgentDeck for Mac** from the
 ## Quickstart
 
 ```bash
-npm install -g @agentdeck/bridge
+npm install -g agentdeck-bridge
 agentdeck                      # starts the bridge, shows a QR
 ```
+
+> The package is `agentdeck-bridge`; `agentdeck` and `@agentdeck/*` on npm are
+> unrelated projects.
 
 Scan the QR with your phone's camera — AgentDeck opens in the browser, nothing
 to install. Then, optionally:

@@ -1,5 +1,5 @@
 {
-  "name": "@agentdeck/bridge",
+  "name": "agentdeck-bridge",
   "version": "0.3.0",
   "description": "AgentDeck bridge daemon: control local coding agents (Claude Code, Cursor, Codex) from your phone",
   "type": "module",

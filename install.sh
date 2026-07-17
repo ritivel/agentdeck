@@ -19,8 +19,10 @@ if [ "$NODE_MAJOR" -lt 22 ] || { [ "$NODE_MAJOR" -eq 22 ] && [ "$NODE_MINOR" -lt
 fi
 
 bold "Installing the AgentDeck bridge…"
-if npm view @agentdeck/bridge version >/dev/null 2>&1; then
-  npm install -g @agentdeck/bridge
+# NOTE: the package is `agentdeck-bridge` (unscoped). Do not "upgrade" this to
+# @agentdeck/* or `agentdeck` — both belong to unrelated projects on npm.
+if npm view agentdeck-bridge version >/dev/null 2>&1; then
+  npm install -g agentdeck-bridge
 else
   # Not on npm yet — build and install from source.
   TMP="$(mktemp -d)"
