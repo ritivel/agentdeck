@@ -34,6 +34,11 @@ agentdeck service install
 
 echo
 bold "Done! Next steps:"
-echo "  1. Get the AgentDeck iOS app on your iPhone (see README)."
-echo "  2. Run: agentdeck pair    — scan the QR with the app."
-echo "  3. For terminal sessions you can type into from the phone: agentdeck claude"
+echo "  1. Run: agentdeck pair    — scan the QR with your phone's camera."
+echo "     AgentDeck opens in the phone's browser. Nothing to install."
+echo "  2. Approve Claude's tool calls from the phone: agentdeck hooks install"
+echo "     (ignore a prompt and the terminal asks as usual — fully reversible)"
+echo "  3. Sessions that follow you between terminal and phone: agentdeck claude"
+echo "     (alias claude=\"agentdeck claude\" to make it the default)"
+echo
+echo "  Anything off? agentdeck doctor"

@@ -4,13 +4,15 @@ import type { AdapterHandle, PlatformAdapter } from './adapters/types.js';
 import { claudeAdapter } from './adapters/claude.js';
 import { cursorAdapter } from './adapters/cursor.js';
 import { codexAdapter } from './adapters/codex.js';
+import { codexAppServerAdapter } from './adapters/codexAppServer.js';
 
 const MAX_TRANSCRIPT = 500;
 
 export const adapters: Record<Platform, PlatformAdapter> = {
   claude: claudeAdapter,
   cursor: cursorAdapter,
-  codex: codexAdapter,
+  // Opt-in preview of the app-server protocol adapter (see codexAppServer.ts).
+  codex: process.env.AGENTDECK_CODEX_APPSERVER === '1' ? codexAppServerAdapter : codexAdapter,
 };
 
 export interface Session {

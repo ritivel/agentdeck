@@ -10,9 +10,73 @@ import { LiveWatcher } from './live/watcher.js';
 import { claudeSource } from './live/claudeTranscripts.js';
 import { codexSource } from './live/codexTranscripts.js';
 import { cursorSource } from './live/cursorTranscripts.js';
+import { PermissionBroker } from './permissions.js';
+import { setCodexPermissionRelay } from './adapters/codexAppServer.js';
 import type { Platform } from './events.js';
 
-const VERSION = '0.1.0';
+/** Tools auto-approved by a permission mode — no point asking the phone. */
+function autoAllowedByMode(permissionMode: string, toolName: string): boolean {
+  if (permissionMode === 'bypassPermissions') return true;
+  if (permissionMode === 'acceptEdits') {
+    return ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'].includes(toolName);
+  }
+  return false;
+}
+
+/** Cap tool input for transport; big inputs become a truncated JSON string. */
+function compactInput(input: unknown): unknown {
+  try {
+    const s = JSON.stringify(input);
+    if (s === undefined) return undefined;
+    return s.length <= 4000 ? input : s.slice(0, 4000) + '…';
+  } catch {
+    return String(input).slice(0, 4000);
+  }
+}
+
+function readBody(req: IncomingMessage, limit = 256 * 1024): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => {
+      size += c.length;
+      if (size > limit) {
+        reject(new Error('body too large'));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function respondJson(res: ServerResponse, status: number, body: object) {
+  res.writeHead(status, { 'content-type': 'application/json' });
+  res.end(JSON.stringify(body));
+}
+
+/** Version from package.json (dist/index.js and src/…ts both sit one level below it). */
+function readVersion(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const p of [join(here, '..', 'package.json'), join(here, '..', '..', 'package.json')]) {
+    try {
+      const v = JSON.parse(readFileSync(p, 'utf8')).version;
+      if (typeof v === 'string') return v;
+    } catch {
+      // keep looking
+    }
+  }
+  return '0.0.0';
+}
+export const VERSION = readVersion();
 
 /** Git repos up to two levels under common code roots — cwd suggestions for new sessions. */
 function suggestDirs(): string[] {
@@ -64,6 +128,7 @@ const MIME: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json',
 };
 
 function serveStatic(root: string, urlPath: string, res: ServerResponse): boolean {
@@ -105,9 +170,28 @@ export async function startServer(port: number, token: string, opts: { watchLive
   const recentlyReleased = new Map<string, string>();
 
   // Terminal sessions running under the `agentdeck claude` PTY wrapper
-  // (nativeSessionId → the wrapper's socket). Prompts for these are injected
-  // into the terminal as keystrokes instead of forking a takeover process.
+  // (nativeSessionId → the wrapper's socket). A prompt for one of these hands
+  // the session off: the wrapper stops the local TUI, the bridge resumes the
+  // same session and runs the phone's prompt (no fork, one owner at a time).
   const ptyRegistry = new Map<string, WebSocket>();
+
+  // Handoffs awaiting the wrapper's ack that its TUI has exited. Prompts that
+  // arrive mid-handoff queue up and run on the taken-over session.
+  interface HandoffWaiter { text: string; reply: (msg: object) => void }
+  const pendingHandoffs = new Map<string, { queue: HandoffWaiter[]; timer: NodeJS.Timeout }>();
+
+  // Clients that completed the hello handshake (phones/web/CLI — not wrappers).
+  const helloClients = new Set<WebSocket>();
+  // Subset that is currently foregrounded (presence messages / hello default).
+  // Approvals for TERMINAL sessions only relay when someone is actually looking,
+  // so a phone in a pocket never stalls the TUI's own permission prompt.
+  const activeClients = new Set<WebSocket>();
+
+  const broker = new PermissionBroker({
+    onRequest: (request) => broadcast({ type: 'permission.request', request }),
+    onResolved: (resolution, request) =>
+      broadcast({ type: 'permission.resolved', id: resolution.id, decision: resolution.decision, resolvedBy: resolution.resolvedBy, sessionId: request.sessionId }),
+  });
 
   const liveWatcher = new LiveWatcher([claudeSource, cursorSource, codexSource], {
     onSessionDiscovered: (session) => {
@@ -156,6 +240,85 @@ export async function startServer(port: number, token: string, opts: { watchLive
     liveWatcher.dismiss(info.id);
     dismissed.dismiss(info.nativeSessionId);
     manager.prompt(session.id, text);
+    return session;
+  };
+
+  /** Session (bridge-owned or live mirror) for a platform-native session id. */
+  const sessionByNativeId = (nativeSessionId: string) =>
+    manager.list().find((s) => s.nativeSessionId === nativeSessionId) ??
+    liveWatcher.list().find((s) => s.nativeSessionId === nativeSessionId);
+
+  // Codex app-server approvals (experimental adapter) ride the same broker as
+  // Claude hooks — approval cards look identical on the phone.
+  setCodexPermissionRelay(async ({ toolName, input, cwd, nativeSessionId }) => {
+    if (!anyPhoneConnected()) return 'deny';
+    const session = nativeSessionId ? sessionByNativeId(nativeSessionId) : undefined;
+    const resolution = await broker.request({
+      sessionId: session?.id,
+      nativeSessionId,
+      platform: 'codex',
+      toolName,
+      input: compactInput(input),
+      cwd,
+      timeoutMs: 45_000,
+    });
+    return resolution.decision === 'allow' ? 'allow' : 'deny';
+  });
+
+  const anyPhoneConnected = () =>
+    [...helloClients].some((ws) => ws.readyState === WebSocket.OPEN);
+  const anyPhoneWatching = () =>
+    [...activeClients].some((ws) => ws.readyState === WebSocket.OPEN);
+
+  /**
+   * PreToolUse hook relay: ask connected phones to approve a tool call, fall
+   * back to 'ask' (Claude's normal permission flow) on timeout or when nobody
+   * is listening — the hook can only ever add a decision, never remove one.
+   *
+   * Bridge-owned sessions have no other permission surface, so any connected
+   * phone gets asked (45s). Terminal sessions have the TUI prompt as fallback,
+   * so they only relay when a phone is actually foregrounded (30s).
+   */
+  const handlePreToolUseHook = async (body: any, res: ServerResponse) => {
+    const toolName = String(body.tool_name ?? 'unknown');
+    const nativeSessionId = body.session_id ? String(body.session_id) : undefined;
+    const session = nativeSessionId ? sessionByNativeId(nativeSessionId) : undefined;
+
+    const bridgeOwned = session && !session.attached;
+    if (bridgeOwned && autoAllowedByMode(session.permissionMode, toolName)) {
+      return respondJson(res, 200, { decision: 'ask' });
+    }
+    if (bridgeOwned ? !anyPhoneConnected() : !anyPhoneWatching()) {
+      return respondJson(res, 200, { decision: 'ask' });
+    }
+    const resolution = await broker.request({
+      sessionId: session?.id,
+      nativeSessionId,
+      platform: 'claude',
+      toolName,
+      input: compactInput(body.tool_input),
+      cwd: body.cwd ? String(body.cwd) : undefined,
+      timeoutMs: bridgeOwned ? 45_000 : 30_000,
+    });
+    respondJson(res, 200, { decision: resolution.decision, reason: resolution.reason });
+  };
+
+  /** Notification/Stop hook relay → alert broadcast (phones show notifications). */
+  const handleAlertHook = (kind: 'notification' | 'stop', body: any, res: ServerResponse) => {
+    const nativeSessionId = body.session_id ? String(body.session_id) : undefined;
+    const session = nativeSessionId ? sessionByNativeId(nativeSessionId) : undefined;
+    // Bridge-owned sessions already stream turn.end/permission events to phones.
+    if (!session || session.attached) {
+      broadcast({
+        type: 'alert',
+        kind,
+        sessionId: session?.id,
+        title: kind === 'stop' ? 'Claude finished' : 'Claude needs attention',
+        body: typeof body.message === 'string' ? body.message.slice(0, 300) : (session?.title ?? ''),
+        cwd: body.cwd ? String(body.cwd) : undefined,
+      });
+    }
+    respondJson(res, 200, { ok: true });
   };
 
   const platformAvailability: Record<string, { available: boolean }> = {};
@@ -171,8 +334,25 @@ export async function startServer(port: number, token: string, opts: { watchLive
       res.end(JSON.stringify({ ok: true, name: hostname(), version: VERSION }));
       return;
     }
-    // The mobile web app (token still required to open the WebSocket).
     const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+
+    // Claude Code hook callbacks (`agentdeck hook …`), authed with the pairing token.
+    if (req.method === 'POST' && path.startsWith('/hooks/')) {
+      if (req.headers['x-agentdeck-token'] !== token) {
+        return respondJson(res, 401, { error: 'unauthorized' });
+      }
+      readBody(req)
+        .then((body) => {
+          if (path === '/hooks/pre-tool-use') return handlePreToolUseHook(body, res);
+          if (path === '/hooks/notification') return handleAlertHook('notification', body, res);
+          if (path === '/hooks/stop') return handleAlertHook('stop', body, res);
+          respondJson(res, 404, { error: 'unknown hook' });
+        })
+        .catch((err) => respondJson(res, 400, { error: err.message }));
+      return;
+    }
+
+    // The mobile web app (token still required to open the WebSocket).
     if (web && req.method === 'GET' && serveStatic(web, path, res)) return;
     res.writeHead(404);
     res.end();
@@ -195,6 +375,8 @@ export async function startServer(port: number, token: string, opts: { watchLive
     const ownedPtys = new Set<string>();
     ws.on('close', () => {
       clients.delete(ws);
+      helloClients.delete(ws);
+      activeClients.delete(ws);
       for (const nativeId of ownedPtys) {
         if (ptyRegistry.get(nativeId) === ws) {
           ptyRegistry.delete(nativeId);
@@ -222,12 +404,15 @@ export async function startServer(port: number, token: string, opts: { watchLive
     function handleMessage(msg: any, reply: (m: object) => void) {
       switch (msg.type) {
         case 'hello':
+          helloClients.add(ws);
+          activeClients.add(ws); // foregrounded until it says otherwise
           reply({
             type: 'welcome',
             serverName: hostname(),
             version: VERSION,
             platforms: platformAvailability,
             sessions: allSessions(),
+            permissions: broker.list(),
           });
           break;
         case 'session.create': {
@@ -272,17 +457,73 @@ export async function startServer(port: number, token: string, opts: { watchLive
           const live = liveWatcher.get(msg.sessionId);
           if (live) {
             const text = String(msg.text ?? '');
-            const pty = live.info.nativeSessionId ? ptyRegistry.get(live.info.nativeSessionId) : undefined;
-            if (pty && pty.readyState === WebSocket.OPEN) {
-              // Type it into the terminal; the transcript tailer mirrors the
-              // turn back to every device. No fork, no ownership change.
-              pty.send(JSON.stringify({ type: 'pty.input', text }));
+            const nativeId = live.info.nativeSessionId;
+            const pty = nativeId ? ptyRegistry.get(nativeId) : undefined;
+            if (pty && pty.readyState === WebSocket.OPEN && nativeId) {
+              if (msg.mode === 'type') {
+                // Power path: literally type it into the terminal TUI.
+                pty.send(JSON.stringify({ type: 'pty.input', text }));
+                break;
+              }
+              // Baton pass: ask the wrapper to stop the local TUI, then resume
+              // the same session here and run the phone's prompt. Prompts that
+              // arrive while the handoff is in flight queue up behind it.
+              const inflight = pendingHandoffs.get(nativeId);
+              if (inflight) {
+                inflight.queue.push({ text, reply });
+                break;
+              }
+              const timer = setTimeout(() => {
+                const entry = pendingHandoffs.get(nativeId);
+                if (!entry) return;
+                pendingHandoffs.delete(nativeId);
+                for (const w of entry.queue) {
+                  w.reply({ type: 'error', message: 'The terminal did not hand the session over. Is the agentdeck wrapper still running?', inReplyTo: 'prompt' });
+                }
+              }, 6000);
+              timer.unref?.();
+              pendingHandoffs.set(nativeId, { queue: [{ text, reply }], timer });
+              pty.send(JSON.stringify({ type: 'pty.handoff', nativeSessionId: nativeId }));
               break;
             }
             takeoverLiveSession(live, text);
             break;
           }
           manager.prompt(msg.sessionId, String(msg.text ?? ''));
+          break;
+        }
+        case 'pty.handoff-ack': {
+          // The wrapper's TUI has exited; the session is free to resume.
+          const nativeId = String(msg.nativeSessionId ?? '');
+          const entry = pendingHandoffs.get(nativeId);
+          if (!entry) break;
+          pendingHandoffs.delete(nativeId);
+          clearTimeout(entry.timer);
+          if (ptyRegistry.get(nativeId) === ws) {
+            ptyRegistry.delete(nativeId);
+            ownedPtys.delete(nativeId);
+          }
+          const liveInfo = liveWatcher.list().find((s) => s.nativeSessionId === nativeId);
+          const live = liveInfo ? liveWatcher.get(liveInfo.id) : undefined;
+          const first = entry.queue.shift();
+          if (!first) break;
+          try {
+            if (!live) throw new Error('The mirrored session disappeared during handoff.');
+            const session = takeoverLiveSession(live, first.text);
+            for (const w of entry.queue) manager.prompt(session.id, w.text);
+          } catch (err: any) {
+            for (const w of [first, ...entry.queue]) {
+              w.reply({ type: 'error', message: err.message, inReplyTo: 'prompt' });
+            }
+          }
+          break;
+        }
+        case 'permission.respond': {
+          const decision = msg.decision === 'allow' || msg.decision === 'deny' ? msg.decision : undefined;
+          if (!decision) throw new Error('permission.respond requires decision allow|deny');
+          if (!broker.respond(String(msg.id ?? ''), decision, typeof msg.reason === 'string' ? msg.reason.slice(0, 300) : undefined)) {
+            throw new Error('That permission request already expired.');
+          }
           break;
         }
         case 'interrupt': {
@@ -339,6 +580,10 @@ export async function startServer(port: number, token: string, opts: { watchLive
         case 'dirs.suggest':
           reply({ type: 'dirs', dirs: suggestDirs() });
           break;
+        case 'presence':
+          if (msg.active === false) activeClients.delete(ws);
+          else if (helloClients.has(ws)) activeClients.add(ws);
+          break;
         case 'ping':
           reply({ type: 'pong' });
           break;
@@ -360,6 +605,9 @@ export async function startServer(port: number, token: string, opts: { watchLive
   return {
     port,
     close() {
+      broker.dispose();
+      for (const entry of pendingHandoffs.values()) clearTimeout(entry.timer);
+      pendingHandoffs.clear();
       manager.disposeAll();
       liveWatcher.stop();
       wss.close();

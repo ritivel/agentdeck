@@ -8,7 +8,9 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>AgentDeck</title>
   <link rel="stylesheet" href="style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🃏</text></svg>">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
 </head>
 <body>
   <div id="app">
@@ -36,6 +38,7 @@
         <h2 id="server-name">AgentDeck</h2>
         <button id="new-session-btn" title="New session">＋</button>
       </header>
+      <div id="perm-strip" class="perm-strip" hidden></div>
       <main id="deck-list"></main>
     </section>
 
@@ -52,7 +55,7 @@
       </header>
       <main id="chat-transcript"></main>
       <div id="takeover-hint" class="hint" hidden>
-        Terminal session — sending a message takes it over
+        Terminal session — send a message to continue it from here. The terminal shows how to take it back.
       </div>
       <footer class="input-bar">
         <textarea id="chat-input" rows="1" placeholder="Message…"></textarea>

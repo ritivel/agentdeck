@@ -1,6 +1,6 @@
 {
   "name": "@agentdeck/bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AgentDeck bridge daemon: control local coding agents (Claude Code, Cursor, Codex) from your phone",
   "type": "module",
   "license": "MIT",
@@ -25,6 +25,7 @@
     "build": "tsc && rm -rf dist/web && cp -R ../web dist/web",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
+    "test": "tsx test/live.mjs && tsx test/hooks.mjs && tsx test/handoff.mjs && tsx test/wrapper.mjs",
     "prepublishOnly": "tsc",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true"
   },

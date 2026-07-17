@@ -1,25 +1,31 @@
 # AgentDeck
 
-One deck for all your coding agents — **Claude Code**, **Cursor**, and **Codex** — on your
-**Mac menu bar** and your **iPhone**.
+Use your coding agents — **Claude Code**, **Cursor**, and **Codex** — **from your phone**.
 
 Your agents keep running on your Mac, in your repos, with your credentials. AgentDeck shows
 every session — including ones you started in a terminal, IDE, or the Codex desktop app —
-live in one place: chat with them, start new ones, interrupt them, get notified when they
-finish or get blocked, and hand sessions between your Mac and your phone.
+live in one place: chat with them, approve their tool calls, start new ones, interrupt
+them, get notified when they finish, and hand sessions between your Mac and your phone
+like a WhatsApp chat moves between devices.
 
-## Install
+**Nothing about your setup changes.** No cloud in the middle, no accounts, no config
+edits you can't undo with one click. If you ignore AgentDeck, everything works exactly
+as before.
 
-### The Mac app (easiest)
+## Install (2 minutes)
 
-Download **AgentDeck-mac.zip** from the
-[latest release](https://github.com/ritivel/agentdeck/releases/latest), unzip, and drag
-**AgentDeck.app** to Applications. That's it — the app ships its own bridge runtime
-(no Node.js required), lives in your menu bar, and:
+### The Mac app (recommended)
 
-- starts/supervises the bridge daemon (toggle **Launch at Login** in Settings)
-- shows all sessions across the three platforms; click any to chat
-- shows a **QR code** to pair your iPhone (menu bar → *Pair iPhone…*)
+1. Download **AgentDeck-mac.zip** from the
+   [latest release](https://github.com/ritivel/agentdeck/releases/latest), unzip, drag
+   **AgentDeck.app** to Applications, open it. It lives in your menu bar and ships its
+   own runtime — no Node.js, no terminal.
+2. Menu bar → **Pair your phone…** → scan the QR **with your phone's camera**.
+   AgentDeck opens in the phone's browser — nothing to install on the phone.
+3. Optional, one click: flip **Phone approvals** in the same menu to approve Claude's
+   tool calls (Bash, file edits, …) from your phone. Ignore a prompt and the normal
+   terminal prompt appears — your regular flow is untouched. Flip it off to remove
+   every trace.
 
 > First launch on a fresh Mac: right-click → Open (the app is ad-hoc signed, not notarized yet).
 
@@ -32,6 +38,8 @@ curl -fsSL https://raw.githubusercontent.com/ritivel/agentdeck/main/install.sh |
 This installs the `agentdeck` command (needs Node 22.5+), registers a login service
 (`agentdeck service install`), and prints the pairing QR (`agentdeck pair`). One of the
 agent CLIs (`claude`, `cursor-agent`, `codex`) should be installed and logged in.
+`agentdeck doctor` checks the whole setup and prints exact fixes; `agentdeck help` lists
+everything else.
 
 ### Any phone, any distance — the mobile web app
 
@@ -89,9 +97,16 @@ the bridge port to the raw internet.
   `codex exec resume`), history intact.
 - **Hand back to the terminal** with `agentdeck resume` (or *Copy Resume Command* in the
   app). Session ids stay stable across hops; open views re-point automatically.
-- **True both-screens mode:** run `agentdeck claude` instead of `claude` — the same
-  interactive TUI, but phone messages are typed into your terminal and replies stream to
-  both screens. `alias claude="agentdeck claude"` if you want this always.
+- **WhatsApp-style handoff:** run `agentdeck claude` instead of `claude` — the same
+  interactive TUI, but the session follows you. Message it from the phone and the terminal
+  hands it over (it shows *"📱 continued from your phone — press any key to take it back"*);
+  press a key and the TUI resumes right where the phone left off. Same session id, same
+  history, no forks. `alias claude="agentdeck claude"` if you want this always.
+- **Approve tool calls from your phone.** `agentdeck hooks install` wires Claude Code's
+  permission prompts (Bash, Edit, Write, …) to the app for **every** session on the machine
+  — even plain `claude` in a terminal. Allow/Deny with one tap; if you don't answer, the
+  normal terminal prompt appears as if AgentDeck weren't there. Approvals only relay while
+  the app is actually open, so a phone in your pocket never slows down your terminal.
 
 ## How it works
 
@@ -120,6 +135,36 @@ the bridge port to the raw internet.
 The phone talks **directly to your Mac** — no cloud in the middle. An optional
 E2E-encrypted relay (the model proven by [Happy](https://github.com/slopus/happy)) is on
 the roadmap.
+
+## Security & "will this mess with my setup?"
+
+- **No cloud, no accounts.** The phone connects directly to your Mac (LAN, Tailscale, or a
+  tunnel you explicitly open). Nothing is uploaded anywhere.
+- **Everything is token-gated.** A random token (`~/.agentdeck/token`, mode 0600) protects
+  the WebSocket and the hook endpoints. The QR/pairing link contains it — treat links like
+  passwords. `agentdeck share` URLs rotate every run.
+- **Phone approvals are additive and fail-safe.** The hook can *answer* a permission
+  prompt for you; it can never create one, block one, or change a session's behavior when
+  unanswered — silence always falls through to Claude's normal flow. Approvals only relay
+  while the app is foregrounded, so a phone in a pocket never stalls a terminal.
+- **Everything is reversible.** `agentdeck hooks uninstall` (or the Mac app toggle)
+  removes the marker-tagged settings entries and the hook script. `agentdeck service
+  uninstall` removes the login service. Deleting the app + `~/.agentdeck` removes all of it.
+- **Your agents, your credentials.** AgentDeck spawns the same CLIs you already use, in
+  your repos, under your user. It adds no model access of its own.
+
+## Troubleshooting
+
+`agentdeck doctor` checks every link in the chain (Node, token, daemon, agent CLIs, hook
+health) and prints the exact fix for anything broken. Common ones:
+
+- **Phone can't connect** — same Wi-Fi? Personal hotspots and guest networks often block
+  device-to-device traffic; `agentdeck share` works regardless.
+- **Approval cards don't appear** — the app must be open (foregrounded) on the phone;
+  check `agentdeck hooks status`; sessions started before enabling pick it up on restart.
+- **Port already in use** — another bridge is running (`agentdeck doctor`), or pass
+  `--port`.
+- Bridge logs: `~/Library/Logs/AgentDeck/bridge.log` (Mac app / service).
 
 ## Platform support
 

@@ -45,19 +45,29 @@ envelopes as spawned sessions. `session.archive` hides the session from the deck
 transcript gains new activity. Disable discovery with `--no-watch`.
 
 Live sessions running under the `agentdeck claude` PTY wrapper are **writable**
-(`readOnly: false`): the wrapper registers with `pty.register { nativeSessionId, cwd }`, and
-the server routes `prompt`/`interrupt` for that session to the wrapper as
-`pty.input { text }` / `pty.interrupt`, which are injected into the terminal as keystrokes
-(bracketed paste + Enter / Escape). The transcript tailer mirrors the turn to every client —
-one process, no forks. When the wrapper's socket closes the session reverts to read-only.
+(`readOnly: false`): the wrapper registers with `pty.register { nativeSessionId, cwd }`.
+The session then has one owner at a time, and ownership moves like a baton:
 
-Sending `prompt` to a live session **without** a wrapper takes it over: the bridge spawns its
-own process resuming the same platform session (`--resume <nativeSessionId>`), seeds it with
-the mirrored transcript, retires the live entry, and broadcasts
-`session.takeover { fromSessionId, session }` so clients can re-point open views to the
-successor session. The terminal's own process is untouched — if it keeps being used there, it
-continues as a divergent fork and reappears in the deck as a new live session. `interrupt` on
-a wrapperless live session returns an `error`.
+- **Phone sends `prompt`** → the server sends the wrapper `pty.handoff { nativeSessionId }`;
+  the wrapper stops the local TUI (transcript flushes to disk), replies
+  `pty.handoff-ack { nativeSessionId }`, and shows a banner
+  ("📱 Session continued from your phone — press any key to take it back"). The server then
+  resumes the session itself (`--resume <nativeSessionId>`), seeds it with the mirrored
+  transcript, broadcasts `session.takeover { fromSessionId, session }`, and delivers the
+  prompt. Prompts arriving mid-handoff queue behind the first. If the wrapper doesn't ack
+  within 6s the prompt fails with an `error` (nothing is forked).
+- **Terminal takes it back** → any keypress in the wrapper triggers `session.release`; once
+  the bridge's process exits, the wrapper respawns the real TUI with `--resume`. The mirror
+  resurfaces and clients re-point via the release/takeover broadcasts, as before.
+- `prompt` with `mode: "type"` skips the handoff and literally types the text into the
+  terminal TUI (bracketed paste + Enter) — the legacy/power path. `interrupt` on a
+  wrapper session is always injected as Escape without changing ownership.
+
+Sending `prompt` to a live session **without** a wrapper takes it over the same way, minus
+the handoff step: the bridge resumes the session, seeds the transcript, retires the live
+entry, and broadcasts `session.takeover`. The terminal's own process is untouched — if it
+keeps being used there, it continues as a divergent fork and reappears in the deck as a new
+live session. `interrupt` on a wrapperless live session returns an `error`.
 
 ```jsonc
 // AgentEvent — normalized across platforms; sent in "event" envelopes
@@ -86,8 +96,10 @@ Every event stored/sent by the bridge is wrapped with metadata:
 | `session.create` | `platform`, `cwd`, `permissionMode?`, `model?`, `title?`, `prompt?` | if `prompt` given, it is sent immediately |
 | `session.list` | — | server replies with `sessions` |
 | `session.history` | `sessionId`, `sinceSeq?` | replay transcript events |
-| `prompt` | `sessionId`, `text` | send a user message to the agent |
+| `prompt` | `sessionId`, `text`, `mode?` | send a user message; `mode: "type"` types into a wrapper terminal instead of handing off |
 | `interrupt` | `sessionId` | stop the current turn |
+| `permission.respond` | `id`, `decision`, `reason?` | answer a `permission.request` card; `decision` is `"allow"` or `"deny"` |
+| `presence` | `active` | foreground state; terminal-session approvals only relay while some client is `active` |
 | `session.archive` | `sessionId` | dispose process, remove from list; archived sessions stay hidden (persisted in `~/.agentdeck/archived-sessions.json`) unless their transcript gains new activity |
 | `session.release` | `sessionId` | hand off to a terminal: dispose the bridge's process (waiting for the transcript to flush) and reply `released { sessionId, nativeSessionId, cwd, title }`. When the transcript resurfaces as a live mirror, the server broadcasts `session.takeover` from the released id so open views re-point to it |
 | `dirs.suggest` | — | server replies `dirs` with git repos found under common code roots |
@@ -97,7 +109,7 @@ Every event stored/sent by the bridge is wrapped with metadata:
 
 | type | fields | notes |
 |---|---|---|
-| `welcome` | `serverName`, `version`, `platforms`, `sessions` | sent after `hello`; `platforms` is `{claude:{available:true},...}` |
+| `welcome` | `serverName`, `version`, `platforms`, `sessions`, `permissions` | sent after `hello`; `permissions` lists approval cards still awaiting an answer |
 | `sessions` | `sessions: SessionInfo[]` | full list |
 | `session.created` | `session: SessionInfo` | broadcast |
 | `session.updated` | `session: SessionInfo` | state/title changes, broadcast |
@@ -105,13 +117,65 @@ Every event stored/sent by the bridge is wrapped with metadata:
 | `session.takeover` | `fromSessionId`, `session: SessionInfo` | a live session was taken over; the conversation continues under `session` (broadcast) |
 | `event` | `sessionId`, `seq`, `ts`, `event: AgentEvent` | live transcript stream, broadcast |
 | `history` | `sessionId`, `events: [{seq,ts,event}]` | reply to `session.history` |
+| `permission.request` | `request: PermissionRequest` | broadcast; show an Allow/Deny card (see below) |
+| `permission.resolved` | `id`, `decision`, `resolvedBy`, `sessionId?` | broadcast when answered or expired; remove the card |
+| `alert` | `kind`, `title`, `body`, `sessionId?`, `cwd?` | broadcast; terminal-session notifications ("Claude finished", "Claude needs attention") |
 | `dirs` | `dirs: string[]` | reply to `dirs.suggest` |
 | `error` | `message`, `inReplyTo?` | |
 | `pong` | — | |
 
+Wrapper-internal messages (sent on the wrapper's own socket, not for phone clients):
+`pty.register { nativeSessionId, cwd }` → `pty.registered`, `pty.handoff { nativeSessionId }`
+(server → wrapper), `pty.handoff-ack { nativeSessionId }` (wrapper → server), plus
+`pty.input { text }` / `pty.interrupt` for the typing path.
+
+## Phone approvals (Claude Code hooks)
+
+`agentdeck hooks install` merges three hooks into `~/.claude/settings.json` (marker-tagged,
+idempotent, `uninstall` removes them cleanly). From then on **every Claude Code session on
+the machine** — wrapped or plain-terminal — relays permission prompts:
+
+1. Claude Code runs `agentdeck hook pre-tool-use`, which POSTs the payload to
+   `POST /hooks/pre-tool-use` (header `x-agentdeck-token: <pairing token>`).
+2. The bridge broadcasts `permission.request` to connected clients:
+
+```jsonc
+// PermissionRequest
+{
+  "id": "perm_ab12cd",
+  "sessionId": "live_1234",        // bridge session when known
+  "nativeSessionId": "504adf8d-…",
+  "platform": "claude",
+  "toolName": "Bash",
+  "input": { "command": "npm test" },   // truncated for transport
+  "cwd": "/Users/me/proj",
+  "createdAt": 1760000000000,
+  "expiresAt": 1760000030000
+}
+```
+
+3. The first `permission.respond` wins and the hook returns
+   `permissionDecision: allow|deny` to Claude. On timeout — 30s for terminal sessions,
+   45s for bridge-owned ones — or when no client is connected/foregrounded, the hook
+   returns no opinion and Claude's normal permission flow proceeds (TUI prompt, settings
+   rules). The phone can grant or refuse; silence never changes existing behavior.
+
+`POST /hooks/notification` and `POST /hooks/stop` feed the `alert` broadcast for sessions
+the bridge doesn't already stream (`Notification` / `Stop` hooks). Bridge-owned sessions
+skip alerts — clients already get their `event` stream.
+
+The same `permission.request` cards are used by the experimental Codex app-server adapter
+(`AGENTDECK_CODEX_APPSERVER=1`), whose exec/patch approvals are answered from the phone and
+default to **deny** on timeout (the app-server requires an answer).
+
 ## Notification guidance for clients
 
 Fire a local notification when, for a session not currently on screen:
+- `permission.request` arrives (agent is waiting on you — highest priority),
+- `alert` arrives (terminal session finished / needs attention),
 - `turn.end` arrives (agent finished / needs input),
 - `permission.denied` arrives (agent blocked),
 - `status` becomes `error` or `exited`.
+
+Send `presence { active: false }` when backgrounded and `{ active: true }` on foreground —
+this is what lets the bridge relay terminal-session approvals only while someone is looking.

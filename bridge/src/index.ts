@@ -1,11 +1,33 @@
 #!/usr/bin/env node
-import { startServer } from './server.js';
+import { startServer, VERSION } from './server.js';
 import { loadOrCreateToken, printPairingInfo } from './pairing.js';
 import { advertise } from './discovery.js';
 import { runResume } from './cli.js';
 import { runWrappedClaude } from './wrapper.js';
 import { runService } from './service.js';
 import { runShare } from './share.js';
+import { runHook, runHooksCommand } from './hooks.js';
+import { runDoctor } from './doctor.js';
+
+const HELP = `AgentDeck — use Claude Code (and friends) from your phone.
+
+Usage:
+  agentdeck                     run the bridge (shows the pairing QR)
+  agentdeck claude [args…]      Claude Code that follows you: message it from
+                                the phone and the terminal hands the session
+                                over; press any key to take it back
+  agentdeck hooks install       approve tool calls from your phone, for every
+                                Claude session on this Mac (uninstall|status)
+  agentdeck resume [query]      continue a phone session in this terminal
+  agentdeck sessions            list recent sessions
+  agentdeck pair                reprint the pairing QR / web link
+  agentdeck share               access from anywhere (Cloudflare tunnel)
+  agentdeck service install     start the bridge at login (uninstall|status)
+  agentdeck doctor              check the whole setup and how to fix it
+  agentdeck --version           print the version
+
+Options: --port <n> (default 8787), --no-qr, --no-bonjour, --no-watch
+Docs: https://github.com/ritivel/agentdeck`;
 
 const args = process.argv.slice(2);
 const portIdx = args.indexOf('--port');
@@ -31,9 +53,12 @@ if (parentIdx >= 0) {
   }
 }
 
-// Subcommands: `agentdeck claude [args…]` runs Claude in a bridge-controlled PTY
-// (messages from the phone type into this terminal); `agentdeck resume [query]` /
-// `agentdeck sessions` continue a phone session here. No subcommand = run the daemon.
+if (args.includes('--version') || args.includes('-V')) {
+  console.log(VERSION);
+  process.exit(0);
+}
+
+// Subcommands (no subcommand = run the daemon); see HELP above.
 const command = args[0] && !args[0].startsWith('-') ? args[0] : undefined;
 if (command === 'claude') {
   runWrappedClaude(args.slice(1), port).catch((err) => {
@@ -60,14 +85,47 @@ if (command === 'claude') {
     console.error(err.message);
     process.exit(1);
   });
+} else if (command === 'hooks') {
+  try {
+    runHooksCommand(args.slice(1), port);
+  } catch (err: any) {
+    console.error(err.message);
+    process.exit(1);
+  }
+} else if (command === 'hook') {
+  // Executed by Claude Code (settings hooks); must never fail the session.
+  runHook(args[1] ?? '', port).finally(() => process.exit(0));
+} else if (command === 'doctor') {
+  runDoctor(port).catch((err) => {
+    console.error(err.message);
+    process.exit(1);
+  });
+} else if (command === 'help') {
+  console.log(HELP);
 } else if (command) {
-  console.error(`unknown command: ${command} (try: agentdeck | agentdeck claude | agentdeck resume | agentdeck sessions | agentdeck service install | agentdeck pair | agentdeck share)`);
+  console.error(`unknown command: ${command}\n`);
+  console.error(HELP);
   process.exit(1);
 }
 
 async function main() {
+  // A background daemon should log unexpected errors and keep serving; dying
+  // over a transient fs/socket hiccup would take every phone offline.
+  process.on('uncaughtException', (err) => console.error(`[agentdeck] uncaught: ${err?.stack ?? err}`));
+  process.on('unhandledRejection', (err: any) => console.error(`[agentdeck] unhandled rejection: ${err?.stack ?? err}`));
+
   const token = process.env.AGENTDECK_TOKEN ?? loadOrCreateToken();
-  const server = await startServer(port, token, { watchLive: !noWatch });
+  let server;
+  try {
+    server = await startServer(port, token, { watchLive: !noWatch });
+  } catch (err: any) {
+    if (err?.code === 'EADDRINUSE') {
+      console.error(`Port ${port} is already in use — an AgentDeck bridge is probably running`);
+      console.error(`(check: agentdeck doctor). To run a second one: agentdeck --port ${port + 1}`);
+      process.exit(1);
+    }
+    throw err;
+  }
 
   let stopAdvertising = () => {};
   if (!noBonjour) {

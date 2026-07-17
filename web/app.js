@@ -24,6 +24,7 @@ const state = {
   redirects: new Map(),    // takeover: old id -> new id
   suggestedDirs: [],
   openSessionId: null,     // chat currently on screen
+  permissions: new Map(),  // id -> PermissionRequest awaiting an answer
 };
 
 const $ = (id) => document.getElementById(id);
@@ -86,12 +87,14 @@ function apply(msg) {
       state.serverName = msg.serverName ?? 'AgentDeck';
       state.platforms = msg.platforms ?? {};
       state.sessions = (msg.sessions ?? []).sort(bySessionOrder);
+      state.permissions = new Map((msg.permissions ?? []).map((r) => [r.id, r]));
       state.connected = true;
       state.reconnectAttempt = 0;
       localStorage.setItem('agentdeck.target', JSON.stringify(state.target));
       setDot('ok');
       showScreen(state.openSessionId ? 'chat' : 'deck');
       send({ type: 'dirs.suggest' });
+      sendPresence();
       requestNotificationPermission();
       renderAll();
       break;
@@ -140,6 +143,20 @@ function apply(msg) {
       state.suggestedDirs = msg.dirs ?? [];
       renderDirSuggestions();
       break;
+    case 'permission.request':
+      state.permissions.set(msg.request.id, msg.request);
+      notifyPermission(msg.request);
+      renderPermissions();
+      break;
+    case 'permission.resolved':
+      state.permissions.delete(msg.id);
+      if (msg.resolvedBy === 'timeout') toast('Approval expired — answer it in the terminal');
+      renderPermissions();
+      break;
+    case 'alert':
+      toast(msg.body ? `${msg.title}: ${msg.body}` : msg.title);
+      notifyAlert(msg);
+      break;
     case 'error':
       toast(msg.message ?? 'error');
       break;
@@ -173,6 +190,82 @@ function requestHistoryIfNeeded(id) {
     send({ type: 'session.history', sessionId: resolved });
   }
 }
+
+// ---------- permissions (phone approvals) ----------
+
+function permissionSession(req) {
+  if (req.sessionId) return sessionById(req.sessionId);
+  if (req.nativeSessionId) return state.sessions.find((s) => s.nativeSessionId === req.nativeSessionId);
+  return undefined;
+}
+
+function respondPermission(id, decision) {
+  send({ type: 'permission.respond', id, decision });
+  state.permissions.delete(id);
+  renderPermissions();
+}
+
+function permCard(req) {
+  const card = el('div', 'perm-card');
+  const head = el('div', 'perm-head');
+  head.append(el('span', null, '✋'), el('span', 'perm-tool', req.toolName));
+  const s = permissionSession(req);
+  head.append(el('span', 'perm-session', s ? s.title : (req.cwd ?? '')));
+  card.append(head);
+  const detail = permDetail(req);
+  if (detail) card.append(el('div', 'perm-detail', detail));
+  const actions = el('div', 'perm-actions');
+  const allow = el('button', 'allow', 'Allow');
+  allow.onclick = (e) => { e.stopPropagation(); respondPermission(req.id, 'allow'); };
+  const deny = el('button', 'deny', 'Deny');
+  deny.onclick = (e) => { e.stopPropagation(); respondPermission(req.id, 'deny'); };
+  actions.append(allow, deny);
+  card.append(actions);
+  return card;
+}
+
+function permDetail(req) {
+  const input = req.input;
+  if (input == null) return '';
+  if (typeof input === 'string') return input.slice(0, 600);
+  if (typeof input.command === 'string') return input.command.slice(0, 600);   // Bash
+  if (typeof input.file_path === 'string') return input.file_path;             // Edit/Write
+  if (typeof input.url === 'string') return input.url;                         // WebFetch
+  return compactJSON(input).slice(0, 600);
+}
+
+function renderPermissions() {
+  // Deck: strip of every pending approval, one tap from anywhere.
+  const strip = $('perm-strip');
+  strip.textContent = '';
+  strip.hidden = state.permissions.size === 0;
+  for (const req of state.permissions.values()) strip.append(permCard(req));
+  // Chat: cards for the open session render inline with the transcript.
+  if (state.openSessionId) renderChatEvents();
+}
+
+function notifyPermission(req) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const s = permissionSession(req);
+  if (!document.hidden && s && resolveId(state.openSessionId) === s.id) return; // already looking at it
+  new Notification(`✋ ${req.toolName} wants to run`, {
+    body: `${s ? s.title + ' — ' : ''}${permDetail(req)}`.slice(0, 140),
+    tag: req.id,
+  });
+}
+
+function notifyAlert(msg) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  if (!document.hidden) return;
+  new Notification(msg.title ?? 'AgentDeck', { body: (msg.body ?? '').slice(0, 140) });
+}
+
+// ---------- presence ----------
+
+function sendPresence() {
+  send({ type: 'presence', active: !document.hidden });
+}
+document.addEventListener('visibilitychange', sendPresence);
 
 // ---------- notifications ----------
 
@@ -211,6 +304,7 @@ function setDot(cls) {
 function renderAll() {
   $('server-name').textContent = state.serverName || 'AgentDeck';
   renderDeck();
+  renderPermissions();
   if (state.openSessionId) renderChatHeader();
 }
 
@@ -341,12 +435,20 @@ function compactJSON(v) {
 
 function renderChatEvents(jump = false) {
   const root = $('chat-transcript');
-  const events = state.transcripts.get(resolveId(state.openSessionId)) ?? [];
+  const openId = resolveId(state.openSessionId);
+  const events = state.transcripts.get(openId) ?? [];
   const nearBottom = root.scrollHeight - root.scrollTop - root.clientHeight < 160;
   root.textContent = '';
   for (const stored of events) {
     const node = eventNode(stored);
     if (node) root.append(node);
+  }
+  const open = sessionById(state.openSessionId);
+  for (const req of state.permissions.values()) {
+    const s = permissionSession(req);
+    if (s && (s.id === openId || (open?.nativeSessionId && s.nativeSessionId === open.nativeSessionId))) {
+      root.append(permCard(req));
+    }
   }
   if (jump || nearBottom) root.scrollTop = root.scrollHeight;
   renderChatHeader();

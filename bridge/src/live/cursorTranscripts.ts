@@ -2,7 +2,20 @@ import { readdirSync, statSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
+import type { DatabaseSync as DatabaseSyncT } from 'node:sqlite';
+
+// Loaded lazily on first store read: importing node:sqlite prints an
+// ExperimentalWarning, which would otherwise leak onto stderr of every CLI
+// invocation (hooks, doctor, wrapper) that never touches Cursor data.
+let DatabaseSyncLazy: typeof DatabaseSyncT | undefined;
+function getDatabaseSync(): typeof DatabaseSyncT {
+  if (!DatabaseSyncLazy) {
+    const require = createRequire(import.meta.url);
+    DatabaseSyncLazy = (require('node:sqlite') as typeof import('node:sqlite')).DatabaseSync;
+  }
+  return DatabaseSyncLazy;
+}
 import type { AgentEvent } from '../events.js';
 import type { LiveSessionMeta, LiveTail, TranscriptSource } from './source.js';
 
@@ -76,8 +89,9 @@ function parseRootBlob(data: Uint8Array): { childIds: string[]; workspaceUri?: s
 function readStore(chatDir: string, opts: { withMessages?: boolean } = {}): CursorStore | null {
   const dbFile = join(chatDir, 'store.db');
   if (!existsSync(dbFile)) return null;
-  let db: DatabaseSync | undefined;
+  let db: DatabaseSyncT | undefined;
   try {
+    const DatabaseSync = getDatabaseSync();
     db = new DatabaseSync(dbFile, { readOnly: true });
     const row = db.prepare("SELECT value FROM meta WHERE key = '0'").get() as { value?: string | Uint8Array } | undefined;
     if (!row?.value) return null;

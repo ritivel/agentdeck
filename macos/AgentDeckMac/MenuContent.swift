@@ -5,6 +5,8 @@ struct MenuContent: View {
     @EnvironmentObject var client: BridgeClient
     @Environment(\.openWindow) private var openWindow
     @State private var showingQR = false
+    @State private var approvalsBusy = false
+    @State private var approvalsError: String?
 
     private var statusColor: Color {
         switch bridge.state {
@@ -55,7 +57,7 @@ struct MenuContent: View {
             Button {
                 showingQR.toggle()
             } label: {
-                Label("Pair iPhone…", systemImage: "qrcode")
+                Label("Pair your phone…", systemImage: "qrcode")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .disabled(!bridge.state.isRunning)
@@ -63,6 +65,25 @@ struct MenuContent: View {
             if showingQR {
                 PairingQRView()
                     .padding(.vertical, 4)
+            }
+
+            Divider()
+
+            Toggle(isOn: approvalsBinding) {
+                Label("Phone approvals", systemImage: "checkmark.shield")
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(!bridge.state.isRunning || approvalsBusy || bridge.hooksInstalled == nil)
+            Text("Approve Claude's tool calls from your phone. Ignore a prompt and the terminal asks as usual — nothing about your setup changes.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let approvalsError {
+                Text(approvalsError)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
             }
 
             Divider()
@@ -80,6 +101,22 @@ struct MenuContent: View {
         }
         .padding(14)
         .frame(width: 300)
+        .task(id: bridge.state.isRunning) {
+            if bridge.state.isRunning { await bridge.refreshHooksStatus() }
+        }
+    }
+
+    private var approvalsBinding: Binding<Bool> {
+        Binding(
+            get: { bridge.hooksInstalled == true },
+            set: { enabled in
+                approvalsBusy = true
+                approvalsError = nil
+                Task {
+                    approvalsError = await bridge.setHooksEnabled(enabled)
+                    approvalsBusy = false
+                }
+            })
     }
 
     private var sessionSummary: some View {

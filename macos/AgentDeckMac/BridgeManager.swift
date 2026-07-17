@@ -197,7 +197,62 @@ final class BridgeManager: ObservableObject {
         return (resp as? HTTPURLResponse)?.statusCode == 200
     }
 
+    // MARK: - Phone approvals (Claude Code hooks)
+
+    /// nil until the first status check completes.
+    @Published private(set) var hooksInstalled: Bool?
+
+    /// Run the bundled CLI (`node dist/index.js <args>`) and capture its output.
+    private func runBridgeCommand(_ args: [String]) async -> (status: Int32, output: String) {
+        guard let runtime = locateRuntime() else { return (127, "bridge runtime not found") }
+        let p = Process()
+        p.executableURL = runtime.nodeURL
+        p.arguments = [runtime.entryURL.path] + args
+        var env = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        env["PATH"] = ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin",
+                       env["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
+        p.environment = env
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        do { try p.run() } catch { return (127, error.localizedDescription) }
+        return await withCheckedContinuation { cont in
+            p.terminationHandler = { proc in
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                cont.resume(returning: (proc.terminationStatus, String(data: data, encoding: .utf8) ?? ""))
+            }
+        }
+    }
+
+    func refreshHooksStatus() async {
+        let (_, out) = await runBridgeCommand(["hooks", "status"])
+        hooksInstalled = out.contains("installed:")
+    }
+
+    /// Enable/disable phone approvals. Returns an error message, or nil on success.
+    /// Additive by design: with approvals on, an unanswered prompt falls back to
+    /// Claude's normal terminal prompt — the user's regular flow is untouched.
+    func setHooksEnabled(_ enabled: Bool) async -> String? {
+        let args = enabled ? ["hooks", "install", "--port", String(port)] : ["hooks", "uninstall"]
+        let (status, out) = await runBridgeCommand(args)
+        await refreshHooksStatus()
+        return status == 0 ? nil : out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - Pairing
+
+    /// Web-app pairing URL — opens in any phone's browser, nothing to install.
+    func webPairingURL() -> String? {
+        guard let token = pairingToken, let host = Self.lanIPAddress() else { return nil }
+        var comps = URLComponents()
+        comps.scheme = "http"
+        comps.host = host
+        comps.port = port
+        comps.path = "/"
+        comps.queryItems = [.init(name: "token", value: token)]
+        return comps.string
+    }
 
     /// The deep link the iOS app pairs with (also encoded in the QR).
     func pairingURL() -> String? {
